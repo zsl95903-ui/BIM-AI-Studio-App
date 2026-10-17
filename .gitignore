@@ -1,0 +1,19 @@
+bin/
+obj/
+artifacts/
+.vs/
+*.user
+*.suo
+*.log
+*.zip
+
+# Local settings and model artifacts
+settings.json
+*.rvt
+*.rfa
+*.png
+*.jpg
+
+# Keep documentation assets
+!docs/assets/
+!docs/assets/**

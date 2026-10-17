@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RevitAddIns>
+  <AddIn Type="Application">
+    <Name>Revit AI</Name>
+    <Assembly>RevitAi.HybridUI\RevitAi.Addin.dll</Assembly>
+    <AddInId>22279ba8-6c79-47a5-ac7a-94fb3017c1bf</AddInId>
+    <FullClassName>RevitAi.Addin.RevitAiApplication</FullClassName>
+    <@@ExternalId@@>REVITAI</@@ExternalId@@>
+    <@@ExternalDescription@@>Revit AI classic chat UI with PDF and CAD attachments.</@@ExternalDescription@@>
+    <AllowLoadIntoExistingSession>true</AllowLoadIntoExistingSession>
+  </AddIn>
+</RevitAddIns>

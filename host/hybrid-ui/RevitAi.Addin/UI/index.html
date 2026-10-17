@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Revit AI</title>
+  <link rel="stylesheet" href="./styles.css?v=9.0">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">AI</div>
+        <div class="brand-copy">
+          <strong>Revit AI</strong>
+          <span id="model-label">deepseek-flash</span>
+          <span id="build-label" class="build-tag">v9.0</span>
+        </div>
+      </div>
+
+      <div class="topbar-actions">
+        <button id="connection-chip" class="connection-chip" type="button">
+          <span class="connection-dot"></span>
+          <span id="connection-text">未配置</span>
+        </button>
+        <button id="tools-button" class="icon-button" type="button" title="查看工具能力" aria-label="查看工具能力">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M14.7 6.3a4 4 0 0 0-5 5L3.8 17.2a2 2 0 0 0 2.8 2.8l5.9-5.9a4 4 0 0 0 5-5l-2.3 2.3-2.8-.7-.7-2.8 2.9-2.6Z"/>
+          </svg>
+        </button>
+        <button id="new-chat" class="icon-button" type="button" title="新对话" aria-label="新对话">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 5v14M5 12h14"/>
+          </svg>
+        </button>
+        <button id="settings-button" class="icon-button" type="button" title="API 设置" aria-label="API 设置">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/>
+            <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/>
+          </svg>
+        </button>
+        <button id="sessions-button" class="icon-button" type="button" title="历史会话" aria-label="历史会话">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 7v5l3 2"/>
+            <path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1"/>
+            <path d="M3 4v4h4"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <main class="chat-view">
+      <div id="messages" class="messages">
+        <section id="welcome" class="welcome">
+          <div class="welcome-mark">AI</div>
+          <h1>今天想处理什么？</h1>
+          <p>可以直接查询模型，也可以让我创建标高、墙体、房间、视图或执行参数修改。</p>
+          <div class="quick-actions">
+            <button type="button" data-prompt="查看当前 Revit 文档状态">查看文档状态</button>
+            <button type="button" data-prompt="列出当前项目所有标高">列出全部标高</button>
+            <button type="button" data-prompt="列出当前视图和可见构件信息">分析当前视图</button>
+            <button type="button" data-prompt="读取当前选中构件的参数">读取选中构件参数</button>
+          </div>
+        </section>
+      </div>
+
+      <form id="composer" class="composer">
+        <div id="attachment-list" class="attachments" hidden></div>
+        <div class="input-shell">
+          <textarea id="prompt" rows="2" placeholder="输入任务，Enter 发送，Shift+Enter 换行"></textarea>
+          <button id="attach-button" class="attach-button" type="button" title="上传图片、PDF、DWG 或文本" aria-label="上传附件">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m9 12 6.5-6.5a3 3 0 0 1 4.2 4.2L11 18.4a5 5 0 0 1-7.1-7.1l8.2-8.2"/>
+            </svg>
+          </button>
+          <button id="send" class="send-button" type="submit">
+            <svg class="send-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m5 12 14-7-4 14-3-6-7-1Z"/>
+            </svg>
+            <span id="send-label">发送</span>
+          </button>
+        </div>
+        <div class="composer-meta">
+          <span id="api-status">请先配置模型 API</span>
+          <span>模型修改操作支持 dry-run，正式执行会走 Revit 事务</span>
+        </div>
+      </form>
+      <input id="attachment-input" type="file" multiple hidden
+             accept=".png,.jpg,.jpeg,.webp,.gif,.bmp,.pdf,.dwg,.dxf,.txt,.md,.json,.xml">
+    </main>
+  </div>
+
+  <aside id="tools-drawer" class="drawer" aria-hidden="true">
+    <div class="drawer-header">
+      <div>
+        <strong>工具能力</strong>
+        <span id="tool-count">0 个工具</span>
+      </div>
+      <button id="tools-close" class="icon-button compact" type="button" aria-label="关闭">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <label class="search-field">
+      <span>搜索</span>
+      <input id="tool-search" type="search" placeholder="例如：标高、参数、保存">
+    </label>
+    <div id="tool-filters" class="tool-filters"></div>
+    <div class="drawer-section">
+      <strong>技能</strong>
+      <div id="skill-list" class="skill-list"></div>
+    </div>
+    <div id="tool-list" class="tool-list"></div>
+  </aside>
+  <div id="drawer-scrim" class="scrim" aria-hidden="true"></div>
+
+  <aside id="sessions-drawer" class="drawer" aria-hidden="true">
+    <div class="drawer-header">
+      <div>
+        <strong>历史会话</strong>
+        <span id="sessions-count">0 个会话</span>
+      </div>
+      <button id="sessions-close" class="icon-button compact" type="button" aria-label="关闭">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+
+    <div class="codex-block">
+      <button id="sessions-new" class="secondary-button" type="button">新建会话</button>
+      <button id="sessions-save" class="secondary-button" type="button">保存当前</button>
+      <button id="sessions-export" class="secondary-button" type="button">导出 Markdown</button>
+    </div>
+
+    <div id="sessions-list" class="session-list"></div>
+  </aside>
+  <div id="sessions-scrim" class="scrim" aria-hidden="true"></div>
+
+  <section id="settings-modal" class="modal" aria-hidden="true">
+    <form id="settings-form" class="modal-panel">
+      <div class="modal-header">
+        <div>
+          <strong>模型连接</strong>
+          <span>配置仅保存在本机，API Key 使用 Windows DPAPI 加密。</span>
+        </div>
+        <button id="settings-close" class="icon-button compact" type="button" aria-label="关闭">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
+
+      <label>
+        <span>API 地址</span>
+        <input id="api-url" type="url" placeholder="https://api.deepseek.com/v1" required>
+      </label>
+      <label>
+        <span>API Key</span>
+        <input id="api-key" type="password" placeholder="留空则保留已保存的 Key">
+      </label>
+      <label>
+        <span>模型</span>
+        <input id="api-model" type="text" placeholder="deepseek-flash" required>
+      </label>
+
+      <div class="modal-actions">
+        <button id="test-api" class="secondary-button" type="button">测试连接</button>
+        <button class="primary-button" type="submit">保存并使用</button>
+      </div>
+      <div id="settings-status" class="settings-status"></div>
+    </form>
+  </section>
+
+  <script src="./app.js?v=9.1-lean"></script>
+</body>
+</html>

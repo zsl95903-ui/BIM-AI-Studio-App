@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RevitAddIns>
+  <AddIn Type="Application">
+    <Name>RevitAI Codex Bridge</Name>
+    <Assembly>RevitAi.CodexBridge\RevitAi.CodexBridge.dll</Assembly>
+    <AddInId>5d6f00a2-8eb5-49ef-9b53-821a9d8f3d4a</AddInId>
+    <FullClassName>RevitAi.CodexBridge.CodexBridgeApplication</FullClassName>
+    <@@ExternalId@@>CODEX</@@ExternalId@@>
+    <@@ExternalDescription@@>Codex automation bridge for RevitAi 4.1.0 tools.</@@ExternalDescription@@>
+    <AllowLoadIntoExistingSession>true</AllowLoadIntoExistingSession>
+  </AddIn>
+</RevitAddIns>

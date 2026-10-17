@@ -1,0 +1,37 @@
+<Project>
+  <!--
+    Shared build settings for the BIM-AI Studio application layer.
+
+    ToolLayerDir points at the tool-layer source (the BIM-AI-Studio repository,
+    checked out under external/). Revit API assemblies come from the local install.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <PlatformTarget>x64</PlatformTarget>
+    <Platforms>x64</Platforms>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <NoWarn>$(NoWarn);CS0618;CS0612;CS0067;CS0169;CS0649;CS8981;CS0162;CS0219;CS0414;CS1998;CS8632;CS0108;CS0114;CS0168;CS0472;CS0728;CS1717;CS0660;CS0661;CS0282;CS0693;CS1591</NoWarn>
+
+    <RevitApiDir Condition="'$(RevitApiDir)' == ''">C:\Program Files\Autodesk\Revit 2027</RevitApiDir>
+    <ToolLayerDir Condition="'$(ToolLayerDir)' == ''">$(MSBuildThisFileDirectory)external\BIM-AI-Studio\rebuilt-120-tools</ToolLayerDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="RevitAPI">
+      <HintPath>$(RevitApiDir)\RevitAPI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="RevitAPIUI">
+      <HintPath>$(RevitApiDir)\RevitAPIUI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+</Project>

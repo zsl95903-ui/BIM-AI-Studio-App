@@ -1,0 +1,3 @@
+[submodule "external/BIM-AI-Studio"]
+	path = external/BIM-AI-Studio
+	url = https://github.com/zsl95903-ui/BIM-AI-Studio.git

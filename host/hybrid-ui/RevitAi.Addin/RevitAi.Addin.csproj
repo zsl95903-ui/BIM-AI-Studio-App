@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <OutputType>Library</OutputType>
+    <AssemblyName>RevitAi.Addin</AssemblyName>
+    <RootNamespace>RevitAi.Addin</RootNamespace>
+    <Version>1.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <UseWPF>true</UseWPF>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+
+  <!-- Tool layer is consumed as source, not as a prebuilt payload. -->
+  <ItemGroup>
+    <ProjectReference Include="$(ToolLayerDir)\RevitAi.Abstractions\RevitAi.Abstractions.csproj" />
+    <ProjectReference Include="$(ToolLayerDir)\RevitAi.Core\RevitAi.Core.csproj" />
+    <ProjectReference Include="$(ToolLayerDir)\RevitAi.Revit\RevitAi.Revit.csproj" />
+    <ProjectReference Include="..\..\production-bridge\RevitAi.CodexBridge\RevitAi.CodexBridge.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />
+    <PackageReference Include="ACadSharp" Version="3.4.9" />
+    <PackageReference Include="PdfPig" Version="0.1.16" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="UI\*.html;UI\*.css;UI\*.js">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <EmbeddedResource Include="UI\index.html">
+      <LogicalName>RevitAi.Addin.UI.index.html</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="UI\styles.css">
+      <LogicalName>RevitAi.Addin.UI.styles.css</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="UI\app.js">
+      <LogicalName>RevitAi.Addin.UI.app.js</LogicalName>
+    </EmbeddedResource>
+    <None Include="RevitAi.addin">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+</Project>
