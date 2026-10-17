@@ -16,28 +16,37 @@ WebView2 (app.js)  ──postMessage──▶  AiPanelPage.cs  ──▶ AgentRu
         └──────── hostObjects / eval ────────┘
 ```
 
-消息以 JSON 传递，宿主侧按 `type` 分派。典型类型：
+消息以 JSON 传递，宿主侧按 `type` 分派。当前实现的类型：
 
 | 方向 | type | 载荷 |
 | --- | --- | --- |
-| JS → C# | `send` | 用户输入、附件引用 |
-| JS → C# | `settings.get` / `settings.save` | 模型配置 |
-| JS → C# | `session.list` / `session.load` | 会话 |
-| C# → JS | `delta` | 流式文本增量 |
-| C# → JS | `tool` | 工具调用开始/结束与摘要 |
-| C# → JS | `done` / `error` | 一轮结束 |
+| JS → C# | `chat` | 用户输入文本 |
+| JS → C# | `chat.cancel` | 取消当前轮 |
+| JS → C# | `attachment.add` / `attachment.clear` | 附件引用 |
+| JS → C# | `get.status` | 请求宿主状态 |
+| JS → C# | `reset` | 清空会话 |
+| JS → C# | `settings.save` | 保存模型配置 |
+| C# → JS | `host.status` | 宿主与 Agent 状态 |
+| C# → JS | `chat.started` / `chat.user` | 一轮开始、用户消息落位 |
+| C# → JS | `chat.progress` | 阶段进度（模型请求、工具执行） |
+| C# → JS | `chat.toolResults` | 工具调用结果摘要 |
+| C# → JS | `chat.response` | 最终答复（整段） |
+| C# → JS | `chat.error` / `chat.cancelled` / `chat.finished` | 异常、取消、结束 |
+| C# → JS | `chat.reset` / `sessions.notice` | 会话重置与提示 |
 
 ## 3. Agent 循环
 
 `AgentLoop` 维持一轮对话的状态机：
 
 1. 组装 system prompt、历史消息与工具清单；
-2. 流式请求模型；
+2. 请求模型（一次请求一次响应）；
 3. 若返回 `tool_calls`，逐个执行并回填结果；
 4. 直到模型不再请求工具，输出最终答复；
 5. 整轮结束后持久化会话。
 
 工具执行通过 `IToolInvoker` 抽象，因此同一循环既可走进程内工具注册表，也可走命名管道。
+
+> 当前模型客户端以 `stream = false` 请求，界面通过 `chat.progress` 与 `chat.toolResults` 展示步骤，而非逐 token 渲染。若需要真正的流式输出，应在客户端增加 SSE 解析并在界面增量追加。
 
 ## 4. 附件处理
 

@@ -71,13 +71,18 @@ WebView2 版本在 `MyPaneControl` 里初始化 `CoreWebView2`，把 `index.html
 
 | type | 方向 | 载荷 |
 | --- | --- | --- |
-| `send` | UI → 宿主 | `text`、可选 `attachments` |
-| `delta` | 宿主 → UI | `text`，增量 |
-| `tool` | 宿主 → UI | `name`、`status`、`summary` |
-| `done` | 宿主 → UI | 整轮结束 |
-| `error` | 宿主 → UI | `message` |
-| `settings.get` / `settings.save` | 双向 | 模型配置 |
-| `session.list` / `session.load` | 双向 | 会话 |
+| `chat` | UI → 宿主 | `text` |
+| `chat.cancel` | UI → 宿主 | 取消当前轮 |
+| `attachment.add` / `attachment.clear` | UI → 宿主 | 附件 |
+| `get.status` | UI → 宿主 | 请求状态 |
+| `reset` | UI → 宿主 | 清空会话 |
+| `settings.save` | UI → 宿主 | 模型配置 |
+| `host.status` | 宿主 → UI | 宿主与 Agent 状态 |
+| `chat.started` / `chat.user` | 宿主 → UI | 轮次开始 |
+| `chat.progress` | 宿主 → UI | 阶段进度 |
+| `chat.toolResults` | 宿主 → UI | 工具结果摘要 |
+| `chat.response` | 宿主 → UI | 最终答复 |
+| `chat.error` / `chat.cancelled` / `chat.finished` | 宿主 → UI | 异常、取消、结束 |
 
 宿主侧建议用一个 `switch (type)` 分派，未知类型直接忽略，避免版本前后不兼容。
 
@@ -97,14 +102,18 @@ var result = await invoker.InvokeAsync("create_straight_wall", new Dictionary<st
 
 工具清单应通过注册表在运行时获取，不要写死在界面里。
 
-### 3.5 流式呈现
+### 3.5 进度与结果呈现
 
-模型返回是增量的。界面应：
+当前模型客户端一次请求返回完整答复，界面按事件更新：
 
-1. 收到 `delta` 立即追加到当前消息；
-2. 收到 `tool` 时插入一条工具活动条目，显示名称与状态；
-3. 收到 `done` 后落盘会话；
-4. 出错时保留已输出内容，并显示可复制的错误文本。
+1. 收到 `chat.started` 建立本轮消息；
+2. 收到 `chat.progress` 更新阶段文本（模型请求 / 工具执行）；
+3. 收到 `chat.toolResults` 插入工具活动条目；
+4. 收到 `chat.response` 显示最终答复；
+5. 收到 `chat.finished` 落盘会话；
+6. 出错或取消时保留已显示内容，并给出可复制的错误文本。
+
+若模型客户端改为 SSE 流式，界面可在 `chat.progress` 之外增加增量 token 事件，其余结构不变。
 
 ## 4. 配置界面
 
