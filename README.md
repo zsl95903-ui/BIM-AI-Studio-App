@@ -29,7 +29,7 @@ BIM-AI-Studio-App       应用层：加载入口、界面、模型接入、PDF
 | `src/RevitAi.Commands` | 旧版 Ribbon 命令（参考源码） |
 | `docs` | 模型接入与界面架构说明 |
 
-> 旧版控制台（`src/RevitAi.*`）依赖账户模块，该模块不在开源范围内，因此这三个工程**仅作参考**，不保证可独立构建。可运行路径是 `host/hybrid-ui`。
+> 旧版控制台（`src/RevitAi.*`）通过离线适配层 `NullRemoteProfileClient` 运行，不需要任何账户服务。构建仍需要工具层的第三方依赖集合，见下文。
 
 ## 构建
 
@@ -63,6 +63,7 @@ dotnet build host\hybrid-ui\RevitAi.Addin\RevitAi.Addin.csproj -c Release `
 | `$(LocalDependencyDir)\UglyToad.PdfPig*.dll` | `PackageReference` `PdfPig` 0.1.16 |
 | `$(LocalDependencyDir)\PdfWorker\PDFtoImage.dll` 等 | `PackageReference` `PDFtoImage` 5.4.0 |
 | `ACadSharp` / `Newtonsoft.Json` / WebView2 本地 DLL | NuGet 包 |
+| 账户 / 授权服务 | `NullRemoteProfileClient` 离线适配层（不联网、返回中性默认值） |
 
 ## 模型接入
 
