@@ -1,0 +1,53 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  structure:
+    name: structure and docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Validate JSON
+        shell: pwsh
+        run: |
+          $bad = 0
+          Get-ChildItem -Recurse -File -Include *.json |
+            Where-Object { $_.FullName -notmatch '\\(bin|obj|external)\\' } |
+            ForEach-Object {
+              try { Get-Content $_.FullName -Raw | ConvertFrom-Json | Out-Null }
+              catch { Write-Host "invalid json: $($_.FullName)"; $bad++ }
+            }
+          if ($bad -gt 0) { throw "$bad invalid json file(s)" }
+
+      - name: Check for absolute local paths
+        shell: pwsh
+        run: |
+          $hits = Get-ChildItem -Recurse -File -Include *.md,*.json,*.cs,*.ps1 |
+            Where-Object { $_.FullName -notmatch '\\(bin|obj|external)\\' } |
+            Select-String -Pattern 'C:\\Users\\' -List
+          if ($hits) { $hits | ForEach-Object { Write-Host $_.Path }; throw 'absolute user paths found' }
+
+  build:
+    name: build (requires Revit 2027)
+    runs-on: windows-latest
+    if: vars.REVIT_BUILD == 'true'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Build host
+        shell: pwsh
+        run: |
+          dotnet build host\hybrid-ui\RevitAi.Addin\RevitAi.Addin.csproj -c Release -p:RevitApiDir=$env:REVIT_API_DIR
+          if ($LASTEXITCODE -ne 0) { throw 'build failed' }

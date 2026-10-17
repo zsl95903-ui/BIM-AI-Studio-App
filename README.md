@@ -89,4 +89,4 @@ dotnet build host\hybrid-ui\RevitAi.Addin\RevitAi.Addin.csproj -c Release `
 
 ## 许可
 
-自有代码采用 Apache-2.0。工具层为衍生作品，其许可边界见工具仓库的 `THIRD_PARTY_NOTICES.md`。
+自有代码采用 [Apache-2.0](LICENSE)。工具层为衍生作品，其许可边界见工具仓库的 `THIRD_PARTY_NOTICES.md`。
