@@ -10,8 +10,7 @@ internal static class PdfRenderWorkerClient
 
     // Only environment failures (missing worker or native runtime) are cached.
     // Per-document failures such as a bitmap allocation error must never be
-    // cached: the previous implementation poisoned every later PDF call for
-    // the rest of the Revit session.
+    // cached for the rest of the Revit session.
     private static string? _cachedRuntimeFailure;
 
     public static async Task<JsonObject> RenderAsync(

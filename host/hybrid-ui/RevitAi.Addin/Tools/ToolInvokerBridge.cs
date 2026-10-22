@@ -1,45 +1,44 @@
-using System.IO;
 using System.Reflection;
-using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
-using RevitAi.Abstractions.AI;
-using RevitAi.Abstractions.Loader;
-using RevitAi.Abstractions.Units;
-using RevitAi.Core.Units;
-using RevitAi.Revit.Units;
-using RevitAi.Core.AI;
-using RevitAi.Revit;
-using Newtonsoft.Json;
+using Autodesk.Revit.UI;
 using RevitAi.Core.Tools;
+using RevitAi.Engine.Abstractions;
+using RevitAi.Engine.Core;
+using RevitAi.Engine.Revit;
+using RevitAi.Engine.Revit.Implementations;
 
 namespace RevitAi.Addin.Tools;
 
 internal sealed class ToolInvokerBridge : IToolInvoker
 {
-    private readonly RevitAdapter _adapter;
-    private readonly AIToolRegistry _registry;
-    private readonly DatumPresentationPostProcessor _datumPresentation;
+    private static readonly JsonSerializerOptions SerializerOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+    };
+
     private readonly object _sync = new();
-    // Original ToolLayer stores one pending ExternalEvent request in a static slot.
     private readonly SemaphoreSlim _invocationGate = new(1, 1);
-    private IReadOnlyList<ToolDefinition>? _definitions;
+    private UIApplication? _uiApplication;
+    private RevitAdapter? _adapter;
+    private AIToolRegistry? _registry;
+    private RevitToolHost? _host;
     private AIToolInvocationHandler? _handler;
-    private bool _initialized;
+    private SessionAIToolDataCache? _cache;
+    private UnitService? _unitService;
+    private IReadOnlyList<ToolDefinition>? _definitions;
 
-    public ToolInvokerBridge(RevitAdapter adapter)
-    {
-        _adapter = adapter;
-        _registry = AIToolRegistry.Instance;
-        _datumPresentation = new DatumPresentationPostProcessor(adapter);
-    }
+    public IReadOnlyList<ToolDefinition> Tools =>
+        TryEnsureInitialized() && _definitions is not null
+            ? _definitions
+            : Array.Empty<ToolDefinition>();
 
-    public IReadOnlyList<ToolDefinition> Tools
+    public void Initialize(UIApplication uiApplication)
     {
-        get
+        ArgumentNullException.ThrowIfNull(uiApplication);
+        lock (_sync)
         {
-            return EnsureInitialized()
-                ? _definitions!
-                : Array.Empty<ToolDefinition>();
+            _uiApplication ??= uiApplication;
         }
     }
 
@@ -64,191 +63,64 @@ internal sealed class ToolInvokerBridge : IToolInvoker
     {
         if (!LeanToolPolicy.IsAllowed(call.Name))
         {
-            return new ToolInvocationResult
-            {
-                ToolCallId = call.Id,
-                ToolName = call.Name,
-                Success = false,
-                Payload = new JsonObject
-                {
-                    ["error"] = $"工具 '{call.Name}' 已从轻量版中屏蔽。"
-                },
-                ErrorCode = "tool_disabled",
-                ErrorMessage = $"工具 '{call.Name}' 已从轻量版中屏蔽。",
-                Duration = TimeSpan.Zero
-            };
+            return Failure(
+                call,
+                "tool_disabled",
+                $"工具 '{call.Name}' 未在当前版本中启用。",
+                TimeSpan.Zero);
         }
 
-        if (!EnsureInitialized())
+        if (!TryEnsureInitialized())
         {
-            return new ToolInvocationResult
-            {
-                ToolCallId = call.Id,
-                ToolName = call.Name,
-                Success = false,
-                Payload = new JsonObject
-                {
-                    ["error"] = "Revit 上下文尚未初始化，请先点击 Revit AI > AI Console。"
-                },
-                ErrorCode = "revit_context_not_ready",
-                ErrorMessage = "Revit 上下文尚未初始化，请先点击 Revit AI > AI Console。"
-            };
-        }
-
-        if (AIRequestManager.HasRequest)
-        {
-            return new ToolInvocationResult
-            {
-                ToolCallId = call.Id,
-                ToolName = call.Name,
-                Success = false,
-                Payload = new JsonObject
-                {
-                    ["error"] =
-                        "Revit 工具调用通道正忙，已阻止并发请求覆盖。"
-                        + "请稍后重试。"
-                },
-                ErrorCode = "revit_tool_busy",
-                ErrorMessage = "Revit 工具调用通道正忙，请稍后重试。"
-            };
+            return Failure(
+                call,
+                "revit_context_not_ready",
+                "Revit 工具上下文尚未初始化，请先打开 AI Console。",
+                TimeSpan.Zero);
         }
 
         var started = DateTimeOffset.UtcNow;
-
         try
         {
-            DatumPresentationPostProcessor.NormalizeExecuteCodeArguments(call);
+            NormalizeExecuteCodeArguments(call);
             var parameters = ConvertArguments(call.Arguments);
-            var document = _adapter.GetActiveDocument();
-            IProjectUnitService? projectUnitService = null;
-            IUnitService? unitService = null;
-            if (document is not null)
-            {
-                projectUnitService = new ProjectUnitService();
-                unitService = new UnitService(projectUnitService, document);
-            }
-
+            var document = _uiApplication?.ActiveUIDocument?.Document;
             var context = new AIToolContext
             {
                 Document = document,
                 Parameters = parameters,
                 RevitAdapter = _adapter,
-                ExternalEvent = _adapter.GetAIToolExternalEvent(),
+                ExternalEvent = _host?.ExternalEvent,
                 SessionId = Guid.NewGuid().ToString("N"),
-                ProjectUnitService = projectUnitService,
-                UnitService = unitService,
-                DataCache = ServiceProvider.GetService<IAIToolDataCache>()
+                DataCache = _cache,
+                UnitService = _unitService
             };
 
-            var gridIdsBefore = call.Name.Equals(
-                "execute_code",
-                StringComparison.OrdinalIgnoreCase)
-                ? DatumPresentationPostProcessor.CollectGridIds(
-                    _adapter.GetActiveDocument() as Autodesk.Revit.DB.Document)
-                : null;
-
-            var result = await _handler!.HandleToolCallAsync(
-                new RevitAi.Core.AI.ToolCallInfo
-                {
-                    ToolName = call.Name,
-                    Parameters = parameters,
-                    CallId = call.Id
-                },
-                context,
-                cancellationToken);
-
-            // A generated script that only fails to compile can be repaired and
-            // retried: nothing ran yet, so the retry is safe and deterministic.
-            string? executeCodeRepair = null;
+            var result = await InvokeToolAsync(call, context, cancellationToken);
+            string? repairNote = null;
             if (!result.Success
-                && call.Name.Equals(
-                    "execute_code",
-                    StringComparison.OrdinalIgnoreCase)
+                && call.Name.Equals("execute_code", StringComparison.OrdinalIgnoreCase)
                 && ExecuteCodeRepair.TryRepair(
-                    result.Error,
+                    result.Message,
                     call.Arguments,
-                    out var repairNote)
-                && call.Arguments["code"] is JsonValue repairedValue
-                && repairedValue.TryGetValue<string>(out var repairedCode))
+                    out var note)
+                && call.Arguments["code"] is JsonValue codeValue
+                && codeValue.TryGetValue<string>(out var repairedCode))
             {
                 parameters["code"] = repairedCode;
-                var retry = await _handler.HandleToolCallAsync(
-                    new RevitAi.Core.AI.ToolCallInfo
-                    {
-                        ToolName = call.Name,
-                        Parameters = parameters,
-                        CallId = call.Id
-                    },
-                    context,
-                    cancellationToken);
+                var retry = await InvokeToolAsync(call, context, cancellationToken);
                 if (retry.Success)
                 {
                     result = retry;
-                    executeCodeRepair = repairNote;
+                    repairNote = note;
                 }
             }
 
             var payload = CreatePayload(result);
-            if (executeCodeRepair is not null)
+            if (repairNote is not null)
             {
-                payload["executeCodeRepair"] = executeCodeRepair;
+                payload["executeCodeRepair"] = repairNote;
             }
-
-            var isExecuteCode = call.Name.Equals(
-                "execute_code",
-                StringComparison.OrdinalIgnoreCase);
-            IReadOnlyCollection<long>? createdGridIds = null;
-            if (result.Success && isExecuteCode && gridIdsBefore is not null)
-            {
-                var after = DatumPresentationPostProcessor
-                    .CollectGridIds(
-                        _adapter.GetActiveDocument() as Autodesk.Revit.DB.Document);
-                createdGridIds = after
-                    .Where(id => !gridIdsBefore.Contains(id))
-                    .ToList();
-            }
-
-            var scriptTouchesGrids = false;
-            if (result.Success && isExecuteCode)
-            {
-                var script = call.Arguments["code"]?.GetValue<string>() ?? string.Empty;
-                scriptTouchesGrids = script.Contains("Grid", StringComparison.Ordinal)
-                    || script.Contains("grid", StringComparison.Ordinal);
-            }
-
-            var shouldApplyPresentation = result.Success
-                && (call.Name.Equals(
-                        "create_level",
-                        StringComparison.OrdinalIgnoreCase)
-                    || call.Name.Equals(
-                        "create_grid",
-                        StringComparison.OrdinalIgnoreCase)
-                    || (isExecuteCode
-                        && (createdGridIds is { Count: > 0 } || scriptTouchesGrids)));
-
-            if (shouldApplyPresentation)
-            {
-                try
-                {
-                    var presentation = await _datumPresentation.ApplyAsync(
-                        call.Name,
-                        context,
-                        payload,
-                        createdGridIds,
-                        cancellationToken);
-                    if (presentation is not null)
-                    {
-                        payload["datumPresentation"] = presentation;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    payload["datumPresentationWarning"] =
-                        ex.GetBaseException().Message;
-                }
-            }
-
-            TryLogExecuteCode(call, result);
 
             return new ToolInvocationResult
             {
@@ -256,64 +128,72 @@ internal sealed class ToolInvokerBridge : IToolInvoker
                 ToolName = call.Name,
                 Success = result.Success,
                 Payload = payload,
-                ErrorCode = result.Success ? null : "exttools_tool_error",
-                ErrorMessage = result.Success ? null : result.Error,
+                ErrorCode = result.Success ? null : "tool_error",
+                ErrorMessage = result.Success ? null : result.Message,
                 Duration = DateTimeOffset.UtcNow - started
             };
         }
         catch (Exception ex)
         {
-            return new ToolInvocationResult
-            {
-                ToolCallId = call.Id,
-                ToolName = call.Name,
-                Success = false,
-                Payload = new JsonObject
-                {
-                    ["error"] = ex.GetBaseException().Message
-                },
-                ErrorCode = "exttools_invocation_error",
-                ErrorMessage = ex.GetBaseException().Message,
-                Duration = DateTimeOffset.UtcNow - started
-            };
+            return Failure(
+                call,
+                "tool_invocation_error",
+                ex.GetBaseException().Message,
+                DateTimeOffset.UtcNow - started);
         }
     }
 
-    private bool EnsureInitialized()
+    private bool TryEnsureInitialized()
     {
         lock (_sync)
         {
-            if (_initialized)
+            if (_handler is not null)
             {
                 return true;
             }
 
-            if (_adapter.GetAIToolExternalEvent() is null)
+            if (_uiApplication is null)
             {
                 return false;
             }
 
-            _registry.SetAdapterAssembly(typeof(RevitAdapter).Assembly);
+            _adapter = new RevitAdapter(_uiApplication);
+            _cache = new SessionAIToolDataCache();
+            _unitService = new UnitService();
+            _registry = AIToolRegistry.Instance;
             _registry.SetRevitAdapter(_adapter);
+            _registry.SetDataCache(_cache);
+            _registry.SetUnitService(_unitService);
+
+            RegisterToolImplementations();
+            _registry.SetAdapterAssembly(typeof(ExtToolLib.GeneratedToolBase).Assembly);
             _registry.EnsureToolsDiscovered();
 
+            _host = new RevitToolHost();
+            _handler = new AIToolInvocationHandler(_registry, _host, _cache);
             _definitions = _registry.GetAllTools()
                 .Select(CreateDefinition)
                 .Where(definition => LeanToolPolicy.IsAllowed(definition.Name))
-                .OrderBy(x => x.ToolSet, StringComparer.OrdinalIgnoreCase)
-                .ThenBy(x => x.Name, StringComparer.OrdinalIgnoreCase)
+                .OrderBy(definition => definition.ToolSet, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
 
-            // The previous UI passes the session tool data cache here; it backs
-            // the get_cache_data tool and the cache invalidation on document
-            // changes, so it must not be left null.
-            _handler = new AIToolInvocationHandler(
-                _registry,
-                RevitAi.Abstractions.Loader.ServiceProvider
-                    .GetService<IAIToolDataCache>());
-            _initialized = true;
             return true;
         }
+    }
+
+    private Task<AIToolResult> InvokeToolAsync(
+        ToolCall call,
+        AIToolContext context,
+        CancellationToken cancellationToken)
+    {
+        return _handler!.HandleToolCallAsync(
+            new RevitAi.Engine.Abstractions.ToolCallInfo(
+                call.Name,
+                context.Parameters,
+                call.Id),
+            context,
+            cancellationToken);
     }
 
     private static ToolDefinition CreateDefinition(IAITool tool)
@@ -322,7 +202,8 @@ internal sealed class ToolInvokerBridge : IToolInvoker
         JsonObject schema;
         try
         {
-            schema = JsonNode.Parse(tool.ParametersSchema)?.AsObject() ?? new JsonObject();
+            schema = JsonNode.Parse(tool.ParametersSchema)?.AsObject()
+                ?? new JsonObject();
         }
         catch
         {
@@ -334,29 +215,29 @@ internal sealed class ToolInvokerBridge : IToolInvoker
             };
         }
 
+        var schemaText = schema.ToJsonString();
         return new ToolDefinition
         {
             Name = tool.Name,
             Description = tool.Description,
+            InputSchema = schema,
             ToolSet = attribute?.Category ?? tool.Category,
             Mutating = attribute?.RequiresModification ?? false,
             RequiresTransaction = attribute?.RequiresTransaction ?? false,
-            SupportsDryRun = schema.ToJsonString().Contains("\"dry_run\"", StringComparison.Ordinal),
-            InputSchema = schema
+            SupportsDryRun =
+                schemaText.Contains("\"dry_run\"", StringComparison.Ordinal)
+                || schemaText.Contains("\"dryRun\"", StringComparison.Ordinal)
         };
     }
 
-    private static Dictionary<string, object> ConvertArguments(JsonObject arguments)
+    private static Dictionary<string, object?> ConvertArguments(JsonObject arguments)
     {
-        var result = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+        var result = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
         foreach (var pair in arguments)
         {
-            var value = ConvertNode(pair.Value);
-            if (value is not null)
-            {
-                result[pair.Key] = value;
-            }
+            result[pair.Key] = ConvertNode(pair.Value);
         }
+
         return result;
     }
 
@@ -377,36 +258,38 @@ internal sealed class ToolInvokerBridge : IToolInvoker
 
         if (node is JsonArray jsonArray)
         {
-            return jsonArray.Select(ConvertNode).Where(x => x is not null).ToList();
+            return jsonArray.Select(ConvertNode).ToList();
         }
 
         if (node is JsonValue value)
         {
-            if (value.TryGetValue<bool>(out var boolValue))
+            if (value.TryGetValue<bool>(out var boolean))
             {
-                return boolValue;
+                return boolean;
             }
-            if (value.TryGetValue<long>(out var longValue))
+
+            if (value.TryGetValue<long>(out var integer))
             {
-                return longValue;
+                return integer;
             }
-            if (value.TryGetValue<double>(out var doubleValue))
+
+            if (value.TryGetValue<double>(out var number))
             {
-                return doubleValue;
+                return number;
             }
-            if (value.TryGetValue<string>(out var stringValue))
+
+            if (value.TryGetValue<string>(out var text))
             {
-                return stringValue;
+                return text;
             }
         }
 
         return node.ToJsonString();
     }
 
-        private static JsonObject CreatePayload(AIToolResult result)
+    private static JsonObject CreatePayload(AIToolResult result)
     {
         var payload = new JsonObject();
-
         if (!string.IsNullOrWhiteSpace(result.Message))
         {
             payload["message"] = result.Message;
@@ -414,79 +297,83 @@ internal sealed class ToolInvokerBridge : IToolInvoker
 
         if (result.Data is not null)
         {
-            try
-            {
-                payload["data"] = JsonNode.Parse(JsonConvert.SerializeObject(result.Data));
-            }
-            catch
-            {
-                payload["data"] = result.Data.ToString();
-            }
+            payload["data"] = JsonSerializer.SerializeToNode(
+                result.Data,
+                result.Data.GetType(),
+                SerializerOptions);
         }
 
-        if (!result.Success && !string.IsNullOrWhiteSpace(result.Error))
+        if (!string.IsNullOrWhiteSpace(result.CacheId))
         {
-            payload["error"] = result.Error;
+            payload["cacheId"] = result.CacheId;
+        }
+
+        if (!result.Success)
+        {
+            payload["error"] = result.Message;
         }
 
         return payload;
     }
 
-    // The AI console only shows the tool result, not the generated script.
-    // Keeping the last scripts on disk makes a failing execute_code call
-    // diagnosable without another round trip.
-    private static void TryLogExecuteCode(ToolCall call, AIToolResult result)
+    private static ToolInvocationResult Failure(
+        ToolCall call,
+        string code,
+        string message,
+        TimeSpan duration)
     {
-        try
+        return new ToolInvocationResult
         {
-            if (!call.Name.Equals(
-                    "execute_code",
-                    StringComparison.OrdinalIgnoreCase))
-            {
-                return;
-            }
+            ToolCallId = call.Id,
+            ToolName = call.Name,
+            Success = false,
+            Payload = new JsonObject { ["error"] = message },
+            ErrorCode = code,
+            ErrorMessage = message,
+            Duration = duration
+        };
+    }
 
-            var directory = Path.Combine(
-                Path.GetTempPath(),
-                "RevitAi",
-                "logs");
-            Directory.CreateDirectory(directory);
-            var path = Path.Combine(directory, "execute-code.log");
-            if (File.Exists(path) && new FileInfo(path).Length > 4 * 1024 * 1024)
-            {
-                File.Delete(path);
-            }
-
-            var builder = new StringBuilder();
-            builder.Append('[')
-                .Append(DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss"))
-                .Append("] success=")
-                .Append(result.Success)
-                .AppendLine();
-            if (!result.Success)
-            {
-                builder.Append("error: ").AppendLine(result.Error);
-            }
-
-            builder.AppendLine("--- code ---");
-            builder.AppendLine(
-                call.Arguments["code"]?.GetValue<string>() ?? string.Empty);
-            builder.AppendLine("--- result ---");
-            if (result.Data is not null)
-            {
-                builder.AppendLine(result.Data.ToString());
-            }
-            else
-            {
-                builder.AppendLine(result.Message);
-            }
-
-            builder.AppendLine();
-            File.AppendAllText(path, builder.ToString());
+    private static void NormalizeExecuteCodeArguments(ToolCall call)
+    {
+        if (!call.Name.Equals("execute_code", StringComparison.OrdinalIgnoreCase)
+            || call.Arguments["code"] is not JsonValue codeValue
+            || !codeValue.TryGetValue<string>(out var code)
+            || string.IsNullOrWhiteSpace(code))
+        {
+            return;
         }
-        catch
+
+        var normalized = code.Replace(
+            ".IntegerValue",
+            ".Value",
+            StringComparison.Ordinal);
+        if (!string.Equals(normalized, code, StringComparison.Ordinal))
         {
+            call.Arguments["code"] = normalized;
         }
     }
-}
 
+    private static void RegisterToolImplementations()
+    {
+        ExtToolLibImplementations.RegisterAll();
+        ExtToolLib.Implementations.ReadOnlyImplementations.RegisterAll();
+        ExtToolLib.Implementations.ReadOnlyImplementations2.RegisterAll();
+        ExtToolLib.Implementations.ReadOnlyImplementations3.RegisterAll();
+        ExtToolLib.Implementations.WriteImplementations.RegisterAll();
+        ExtToolLib.Implementations.WriteImplementations2.RegisterAll();
+        ExtToolLib.Implementations.WriteImplementations3.RegisterAll();
+        ExtToolLib.Implementations.ParameterImplementations.RegisterAll();
+        ExtToolLib.Implementations.MaterialImplementations.RegisterAll();
+        ExtToolLib.Implementations.FamilyElementImplementations.RegisterAll();
+        ExtToolLib.Implementations.ProjectParameterImplementations.RegisterAll();
+        ExtToolLib.Implementations.ModelingImplementations.RegisterAll();
+        ExtToolLib.Implementations.ModelingImplementations2.RegisterAll();
+        ExtToolLib.Implementations.ElementOpsImplementations.RegisterAll();
+        ExtToolLib.Implementations.QueryInteractionImplementations.RegisterAll();
+        ExtToolLib.Implementations.DomainImplementations.RegisterAll();
+        ExtToolLib.Implementations.DomainImplementations2.RegisterAll();
+        ExtToolLib.Implementations.DomainImplementations3.RegisterAll();
+        ExtToolLib.Implementations.CodeToolImplementations.RegisterAll();
+    }
+}

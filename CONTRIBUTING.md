@@ -21,6 +21,8 @@
 ## 验证
 
 ```powershell
-dotnet build host\hybrid-ui\RevitAi.Addin\RevitAi.Addin.csproj -c Release
-dotnet build host\hybrid-ui\RevitAi.PdfWorker\RevitAi.PdfWorker.csproj -c Release
+powershell -ExecutionPolicy Bypass -File .\host\hybrid-ui\build.ps1
 ```
+
+提交说明中应区分自动测试、编译验证和真实 Revit 项目验证。未在真实项目中
+执行的流程必须明确标注为“未实测”。

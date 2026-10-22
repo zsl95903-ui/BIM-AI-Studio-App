@@ -1,7 +1,6 @@
 using System.IO;
 using System.Text;
 using System.Text.Json.Nodes;
-using RevitAi.Core;
 using RevitAi.Core.Agent;
 using RevitAi.Addin.Tools;
 using UglyToad.PdfPig;
@@ -235,38 +234,9 @@ internal sealed class AttachmentPreprocessor
 
     private static string ExtractCad(string filePath)
     {
-        var service = CoreServicesFactory.CreateCADFileService()
-            ?? throw new InvalidOperationException("无法创建 CAD 文件服务。");
-        var data = service.ParseCADFile(filePath, 1.0)
-            ?? throw new InvalidOperationException("ACadSharp 无法解析该 CAD 文件。");
-
         var builder = new StringBuilder();
         builder.AppendLine($"文件: {filePath}");
-        builder.AppendLine($"图层: {data.Layers.Count}");
-        builder.AppendLine($"线条: {data.Lines.Count}");
-        builder.AppendLine($"文字: {data.Texts.Count}");
-        builder.AppendLine($"图块: {data.Blocks.Count}");
-        builder.AppendLine("图层统计:");
-
-        foreach (var layer in data.Layers.Take(50))
-        {
-            builder.AppendLine(
-                $"- {layer.Name}: "
-                + $"{data.GetLinesByLayer(layer.Name).Count} 条线, "
-                + $"{data.GetTextsByLayer(layer.Name).Count} 个文字, "
-                + $"{data.GetBlocksByLayer(layer.Name).Count} 个图块");
-        }
-
-        builder.AppendLine("文字样例:");
-        foreach (var text in data.Texts
-                     .Where(item => !string.IsNullOrWhiteSpace(item.Content))
-                     .Take(200))
-        {
-            builder.AppendLine(
-                $"- [{text.LayerName}] {text.Content} "
-                + $"({text.X:F1}, {text.Y:F1})");
-        }
-
+        builder.AppendLine("CAD 文本提取未在当前版本中启用。");
         return builder.ToString();
     }
 

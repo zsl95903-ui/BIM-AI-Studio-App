@@ -1,7 +1,4 @@
 using System.Text.Json.Nodes;
-using RevitAi.Core.AI;
-using RevitAi.Abstractions.AI;
-using RevitAi.Abstractions.Loader;
 using System.IO;
 using RevitAi.Core.Agent;
 using RevitAi.Core.Tools;
@@ -55,7 +52,7 @@ internal sealed class AgentRuntimeService : IDisposable
             progress,
             preparedAttachments);
 
-        // Previous behaviour: the session is persisted after every turn.
+        // Persist the session after every completed turn.
         _sessionStore.Save(_session);
         return result;
     }
@@ -199,43 +196,6 @@ internal sealed class AgentRuntimeService : IDisposable
         }
     }
 
-    private static JsonArray BuildSkillStatus()
-    {
-        var skills = new JsonArray();
-        var manager = ServiceProvider.GetService<ISkillManager>();
-        if (manager is null)
-        {
-            return skills;
-        }
-
-        var list = manager.GetSkillList();
-        if (!list.IsSuccess || list.Value is null)
-        {
-            return skills;
-        }
-
-        foreach (var skill in list.Value)
-        {
-            var variables = new JsonArray();
-            foreach (var variable in skill.Variables ?? [])
-            {
-                variables.Add(variable.Name);
-            }
-
-            skills.Add(new JsonObject
-            {
-                ["name"] = skill.SkillName,
-                ["displayName"] = skill.DisplayName,
-                ["description"] = skill.Description,
-                ["category"] = skill.Category,
-                ["steps"] = skill.Steps?.Count ?? 0,
-                ["variables"] = variables
-            });
-        }
-
-        return skills;
-    }
-
     public JsonObject GetStatus()
     {
         var tools = _tools.Tools.ToList();
@@ -253,7 +213,7 @@ internal sealed class AgentRuntimeService : IDisposable
             ["summaryCoveredMessages"] = _session.SummaryMessageCount,
             ["hasSummary"] = !string.IsNullOrEmpty(_session.AccumulatedSummary),
             ["build"] = "v9.2-external-rename",
-            ["skills"] = BuildSkillStatus(),
+            ["skills"] = new JsonArray(),
             ["toolCount"] = tools.Count,
             ["toolSets"] = new JsonArray(
                 tools
@@ -358,158 +318,31 @@ internal sealed class AgentRuntimeService : IDisposable
                 + "the URL, API key and model.");
         }
 
-        var registry = AIToolRegistry.Instance;
-        var promptManager = new AISystemPromptManager(registry);
-        var systemPrompt = promptManager.GenerateSystemPrompt()
+        var systemPrompt =
+            "You are the Revit automation assistant inside BIM-AI Studio. "
+            + "Use the supplied function tools through standard tool calls. "
+            + "Never invent tool results. Resolve family, type, material, level, "
+            + "grid and view names through query tools before using them. "
+            + "Prefer native modeling tools over generated code. "
+            + "Do not use file access, reflection or process APIs from execute_code."
             + Environment.NewLine
-            + "当工具可用时，优先使用标准 tool_calls。若模型接口返回文本工具调用，"
-            + "系统会兼容解析，但不要伪造工具结果。"
             + Environment.NewLine
-            + "名称解析规则：族名、类型名、材质名、标高名、轴网名、视图名等必须先通过查询工具"
-            + "（get_all_families / get_family_types / material_query / get_all_levels / get_all_grids / get_all_views）"
-            + "取得真实值，禁止凭印象猜测。若用户提到的名称不存在，先列出可用项并选择最接近的再执行。"
-            + Environment.NewLine
-            + "创建结构柱、梁、墙、门窗等构件时优先复用项目中已有的族，不要从族模板新建族；"
-            + "只有用户明确要求自定义族时才处理族模板。"
-            + Environment.NewLine            + "Revit 2027 API 兼容要求：ElementId 已没有 IntegerValue 属性，"
-            + "读取整数 ID 必须使用 ElementId.Value（long）。"
-            + "标高和轴网显示优先调用 create_level/create_grid，插件会自动处理"
-            + "立面标高线长度、两端标记、轴网红色和双端轴号。"
-            + "只有现有工具无法完成的显示细节才使用 execute_code。"
-            + "在立面或剖面中设置标高线时使用"
-            + " level.SetCurveInView(DatumExtentType.ViewSpecific, view, line)、"
-            + " level.SetDatumExtentType(DatumEnds.End0, view, DatumExtentType.ViewSpecific)"
-            + " 和 level.ShowBubbleInView(DatumEnds.End0, view)。"
-            + "在平面中设置轴网时使用 OverrideGraphicSettings."
-            + "SetProjectionLineColor(new Color(255, 0, 0))，不要假设创建基准元素"
-            + "本身会改变视图显示。"
-            + "execute_code 里不要写裸表达式语句（例如单独一行 g.Name; 或多行"
-            + "属性链末尾的 .Name;），会触发 CS0201 编译错误；取值请赋给变量，"
-            + "需要返回结果时以 new { ... } 表达式结尾。"
-            + "execute_code 里也不要使用 AppDomain、反射或文件读写等被安全策略"
-            + "禁止的 API。";
-
-        systemPrompt += Environment.NewLine
-            + "Grid/level display (red colour, bubbles on both ends, extended "
-            + "datum lines) is applied automatically by the add-in after "
-            + "create_grid or execute_code. Do not hand-write bubble, extent "
-            + "or override code in execute_code.";
+            + BuildToolPrompt();
 
         return new AgentLoop(
             CreateModelClient(),
             _tools,
             Model,
-            systemPrompt: systemPrompt,
-            specialCommandHandler: HandleSpecialCommandAsync);
+            systemPrompt: systemPrompt);
     }
 
-    // Port of the previous HandleSpecialCommandAsync / HandleRequestSkillList /
-    // HandleRequestSkillDetail: the loop intercepts these commands, injects a
-    // message and retries the round.
-    private Task<AgentSpecialCommandResult?> HandleSpecialCommandAsync(
-        string content,
-        CancellationToken cancellationToken)
+    private string BuildToolPrompt()
     {
-        if (!SpecialCommandHandler.IsSpecialCommand(content))
-        {
-            return Task.FromResult<AgentSpecialCommandResult?>(null);
-        }
-
-        var (command, argument) = SpecialCommandHandler.ParseSpecialCommand(content);
-        switch (command)
-        {
-            case "REQUEST_TOOLS":
-                return Task.FromResult<AgentSpecialCommandResult?>(
-                    new AgentSpecialCommandResult
-                    {
-                        SystemPrompt = new AISystemPromptManager(
-                            AIToolRegistry.Instance).GenerateSystemPromptWithTools(),
-                        MessageRole = "system",
-                        MessageContent = "工具定义已自动提供，无需再次请求。"
-                    });
-
-            case "REQUEST_SKILL_LIST":
-            {
-                var manager = ServiceProvider.GetService<ISkillManager>();
-                if (manager is null)
-                {
-                    return Task.FromResult<AgentSpecialCommandResult?>(
-                        new AgentSpecialCommandResult
-                        {
-                            MessageRole = "system",
-                            MessageContent = "技能系统未注册。"
-                        });
-                }
-
-                var list = manager.GetSkillList();
-                if (!list.IsSuccess || list.Value is null)
-                {
-                    return Task.FromResult<AgentSpecialCommandResult?>(
-                        new AgentSpecialCommandResult
-                        {
-                            MessageRole = "system",
-                            MessageContent = "技能列表读取失败：" + (list.Error ?? "未知错误")
-                        });
-                }
-
-                var lines = list.Value.Select(skill =>
-                    $"- {skill.SkillName}（{skill.DisplayName}）：{skill.Description}");
-                return Task.FromResult<AgentSpecialCommandResult?>(
-                    new AgentSpecialCommandResult
-                    {
-                        MessageRole = "system",
-                        MessageContent =
-                            $"可用技能列表（共 {list.Value.Count} 个）：\n"
-                            + string.Join("\n", lines)
-                            + "\n\n使用 execute_skill 工具执行技能。"
-                    });
-            }
-
-            case "REQUEST_SKILL_DETAIL":
-            {
-                var manager = ServiceProvider.GetService<ISkillManager>();
-                if (manager is null)
-                {
-                    return Task.FromResult<AgentSpecialCommandResult?>(
-                        new AgentSpecialCommandResult
-                        {
-                            MessageRole = "system",
-                            MessageContent = "技能系统未注册。"
-                        });
-                }
-
-                var detail = manager.GetSkillDetail(argument ?? string.Empty);
-                if (!detail.IsSuccess || detail.Value is null)
-                {
-                    return Task.FromResult<AgentSpecialCommandResult?>(
-                        new AgentSpecialCommandResult
-                        {
-                            MessageRole = "system",
-                            MessageContent =
-                                $"技能 '{argument}' 不存在。"
-                        });
-                }
-
-                var steps = detail.Value.Steps is null
-                    ? string.Empty
-                    : string.Join(
-                        "\n",
-                        detail.Value.Steps.Select(
-                            (step, index) =>
-                                $"{index + 1}. {step.Tool}（{step.Description}）"));
-                return Task.FromResult<AgentSpecialCommandResult?>(
-                    new AgentSpecialCommandResult
-                    {
-                        MessageRole = "system",
-                        MessageContent =
-                            $"技能详情：{detail.Value.DisplayName}\n"
-                            + $"描述：{detail.Value.Description}\n"
-                            + $"步骤：\n{steps}\n\n使用 execute_skill 工具执行此技能。"
-                    });
-            }
-        }
-
-        return Task.FromResult<AgentSpecialCommandResult?>(null);
+        var lines = _tools.Tools
+            .OrderBy(tool => tool.ToolSet, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(tool => tool.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(tool => $"- {tool.Name} [{tool.ToolSet}]: {tool.Description}");
+        return "Available Revit tools:" + Environment.NewLine + string.Join(Environment.NewLine, lines);
     }
 
     private OpenAiCompatibleModelClient CreateModelClient()

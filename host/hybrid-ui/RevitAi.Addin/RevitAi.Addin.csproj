@@ -9,21 +9,22 @@
     <FileVersion>1.0.0.0</FileVersion>
     <UseWPF>true</UseWPF>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RevitInstallDir Condition="'$(RevitInstallDir)' == ''">$(RevitApiDir)</RevitInstallDir>
   </PropertyGroup>
 
   <!-- Tool layer is consumed as source, not as a prebuilt payload. -->
   <ItemGroup>
-    <ProjectReference Include="$(ToolLayerDir)\RevitAi.Abstractions\RevitAi.Abstractions.csproj" />
-    <ProjectReference Include="$(ToolLayerDir)\RevitAi.Core\RevitAi.Core.csproj" />
-    <ProjectReference Include="$(ToolLayerDir)\RevitAi.Revit\RevitAi.Revit.csproj" />
-    <ProjectReference Include="..\..\production-bridge\RevitAi.CodexBridge\RevitAi.CodexBridge.csproj" />
+    <ProjectReference Include="..\RevitAi.Core\RevitAi.Core.csproj" />
+    <ProjectReference Include="$(ToolLayerDir)\src\RevitAi.Engine.Abstractions\RevitAi.Engine.Abstractions.csproj" />
+    <ProjectReference Include="$(ToolLayerDir)\src\RevitAi.Engine.Core\RevitAi.Engine.Core.csproj" />
+    <ProjectReference Include="$(ToolLayerDir)\src\RevitAi.Engine.Revit\RevitAi.Engine.Revit.csproj" />
+    <ProjectReference Include="$(ToolLayerDir)\src\ExtToolLib\ExtToolLib.csproj" />
+    <ProjectReference Include="$(ToolLayerDir)\src\ExtToolLib.Implementations\ExtToolLib.Implementations.csproj" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.0" />
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />
-    <PackageReference Include="ACadSharp" Version="3.4.9" />
     <PackageReference Include="PdfPig" Version="0.1.16" />
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" />
   </ItemGroup>

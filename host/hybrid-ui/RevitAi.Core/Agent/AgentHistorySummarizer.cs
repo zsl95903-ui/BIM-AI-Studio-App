@@ -2,10 +2,8 @@ using System.Text;
 
 namespace RevitAi.Core.Agent;
 
-// Port of the previous history reader's local summariser
-// (AIChatPanelViewModel.GenerateSessionSummaryAsync /
-//  GenerateSessionSummaryForRangeAsync). It is deliberately heuristic: message
-// counts, the first user queries, the tools that were used and the time range.
+// Local heuristic summarizer based on message counts, the first user queries,
+// the tools that were used and the time range.
 internal static class AgentHistorySummarizer
 {
     public const int KeepRecentCount = 50;

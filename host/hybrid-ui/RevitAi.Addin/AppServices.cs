@@ -1,6 +1,4 @@
 using Autodesk.Revit.UI;
-using RevitAi.Revit;
-using RevitAi.Revit.UI;
 using System.IO;
 using System.Text.Json.Nodes;
 using RevitAi.Core.Tools;
@@ -17,8 +15,6 @@ internal static class AppServices
 
     public static UIApplication? UiApplication { get; private set; }
 
-    public static RevitAdapter Adapter { get; private set; } = null!;
-
     public static IToolInvoker ToolRegistry { get; private set; } = null!;
 
     public static AgentRuntimeService Agent { get; private set; } = null!;
@@ -27,23 +23,9 @@ internal static class AppServices
 
     public static BridgePipeServer PipeServer { get; private set; } = null!;
 
-    private static RuntimeBootstrap? _runtimeBootstrap;
-
     public static void Initialize(UIControlledApplication application)
     {
-        _runtimeBootstrap = new RuntimeBootstrap();
-        _runtimeBootstrap.InitializeBeforeAdapter();
-
-        Adapter = RevitAdapterManager.CurrentAdapter as RevitAdapter
-            ?? throw new InvalidOperationException(
-                "RevitAi 4.1.0 adapter is not ready. The RevitAi loader must start first.");
-        _runtimeBootstrap.AttachAdapter(Adapter);
-
-        var externalEvent = Adapter.GetAIToolExternalEvent();
-        LogStartup($"AI ExternalEvent: {(externalEvent is null ? "NULL" : "READY")}");
-
-        ToolRegistry = new ToolInvokerBridge(Adapter);
-        _runtimeBootstrap.RegisterLocalTools(Adapter);
+        ToolRegistry = new ToolInvokerBridge();
         Agent = new AgentRuntimeService(ToolRegistry);
         Panel = new AiPanelPage();
         PipeServer = new BridgePipeServer(ToolRegistry, Agent);
@@ -57,6 +39,12 @@ internal static class AppServices
     public static void InitializeAdapter(ExternalCommandData commandData)
     {
         SetUiApplication(commandData.Application);
+        if (ToolRegistry is ToolInvokerBridge bridge)
+        {
+            bridge.Initialize(commandData.Application);
+        }
+
+        LogStartup("Tool layer initialized.");
     }
 
     private static void LogStartup(string message)
@@ -90,7 +78,6 @@ internal static class AppServices
         Panel?.Dispose();
         PipeServer?.Dispose();
         Agent?.Dispose();
-        _runtimeBootstrap?.Dispose();
     }
 }
 

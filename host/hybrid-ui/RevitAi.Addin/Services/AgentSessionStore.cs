@@ -4,11 +4,9 @@ using RevitAi.Core.Agent;
 
 namespace RevitAi.Addin.Services;
 
-// Port of the previous AIChatSessionManager storage layout:
+// Session storage layout:
 //   %LOCALAPPDATA%\RevitAi\sessions\session_<id>.json
 //   %LOCALAPPDATA%\RevitAi\sessions\session_index.json
-// The previous used %LOCALAPPDATA%\Ext.Tools\AIChat\sessions; we keep the same
-// file naming and index shape under our own folder.
 internal sealed class AgentSessionStore
 {
     private const string IndexFileName = "session_index.json";

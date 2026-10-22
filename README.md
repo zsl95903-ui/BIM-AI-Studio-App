@@ -1,73 +1,52 @@
 # BIM-AI Studio App
 
-BIM-AI Studio 的**应用层**：加载入口、上层界面、模型接入与 PDF 处理。
+BIM-AI Studio 应用层：Revit 2027 加载入口、WebView2 界面、Agent 循环、
+OpenAI-compatible 模型接入、PDF 处理与 MCP 集成。
 
-工具契约与 120 个工具的实现位于另一个仓库 [BIM-AI-Studio](https://github.com/zsl95903-ui/BIM-AI-Studio)，本仓库以源码方式引用它。
+工具契约和 120 个工具实现位于
+[BIM-AI-Studio](https://github.com/zsl95903-ui/BIM-AI-Studio)，本仓库通过
+Git submodule 以源码方式引用 `external/BIM-AI-Studio/toolset`。
+
+项目自有代码采用 [Apache-2.0](LICENSE)。
 
 > Not affiliated with or endorsed by Autodesk.
 
----
+## 项目状态
 
-## 仓库关系
+- 主要目标平台为 Autodesk Revit 2027、Windows x64 和 .NET 10。
+- 本项目由个人开发者维护，代码质量、兼容性和文档会持续改进。
+- 自动化验证覆盖工具契约、模拟 Revit 适配器和应用层编译，不等同于对所有
+  Revit 项目、族库、MEP 模板、CAD 文件和复杂建模流程的完整现场验证。
+- 部分高级功能尚未在真实项目中充分测试，包括卫星图导入、复杂道路与楼梯、
+  MEP 系统联动、批量族参数、CAD 文本提取和多 Revit 进程并发。
+- 写入模型前应备份项目，并先在测试模型中验证工具调用。
 
-```
-BIM-AI-Studio           工具层：契约、注册表、服务、120 个工具
-        ▲
-        │ 源码引用（external/BIM-AI-Studio，git submodule）
-        │
-BIM-AI-Studio-App       应用层：加载入口、界面、模型接入、PDF
-```
-
-## 目录
+## 组成
 
 | 目录 | 内容 |
 | --- | --- |
-| `host/hybrid-ui` | **可运行的加载入口**：`RevitAi.HybridUI.addin` + `RevitAi.Addin`（DockablePane + WebView2）+ 内置 Agent 循环 + PDF Worker |
-| `host/production-bridge` | Codex 命名管道桥 |
-| `src/RevitAi.Loader` | 旧版控制台入口的加载器（参考源码） |
-| `src/RevitAi.Main` | 旧版控制台主体（参考源码） |
-| `src/RevitAi.Commands` | 旧版 Ribbon 命令（参考源码） |
-| `docs` | 模型接入与界面架构说明 |
+| `host/hybrid-ui` | 当前维护的加载入口、WebView2 UI、Agent 循环、PDF Worker 和工具兼容层 |
+| `host/hybrid-ui/RevitAi.Core` | 模型消息、Agent 循环、会话状态与 OpenAI-compatible 客户端 |
+| `host/hybrid-ui/RevitAi.Addin` | Revit 宿主、DockablePane、工具适配器、设置与 MCP 集成 |
+| `external/BIM-AI-Studio` | 工具层源码子模块，目录名为 `toolset` |
+| `docs` | 模型、界面、贡献和状态说明 |
 
-> 旧版控制台（`src/RevitAi.*`）通过最小桩 `RemoteProfileStub` 运行，不需要任何账户服务。构建仍需要工具层的第三方依赖集合，见下文。
+## 兼容层
 
-## 构建
+`host/hybrid-ui/RevitAi.Addin/Tools/ToolInvokerBridge.cs` 将当前 UI 的
+`IToolInvoker` 契约映射到工具仓库的 `IAIToolRegistry`、
+`AIToolInvocationHandler` 和 `RevitToolHost`：
 
-前置条件：
-
-- Autodesk Revit 2027（提供 `RevitAPI.dll` / `RevitAPIUI.dll`）
-- .NET 10 SDK
-
-```powershell
-git clone --recurse-submodules https://github.com/zsl95903-ui/BIM-AI-Studio-App.git
-cd BIM-AI-Studio-App
-dotnet build host\hybrid-ui\RevitAi.Addin\RevitAi.Addin.csproj -c Release
-dotnet build host\hybrid-ui\RevitAi.PdfWorker\RevitAi.PdfWorker.csproj -c Release
-```
-
-Revit 装在非默认目录时：
-
-```powershell
-dotnet build host\hybrid-ui\RevitAi.Addin\RevitAi.Addin.csproj -c Release `
-  -p:RevitApiDir="D:\Autodesk\Revit 2027" `
-  -p:ToolLayerDir="D:\src\BIM-AI-Studio\rebuilt-120-tools"
-```
-
-## 依赖处理
-
-两处原先依赖本机预编译产物或硬编码路径的地方，已改为标准依赖：
-
-| 原方式 | 现方式 |
-| --- | --- |
-| 引用 `build/payload/app/R2027/RevitAi.*.dll` | `ProjectReference` 指向工具层源码 |
-| `$(LocalDependencyDir)\UglyToad.PdfPig*.dll` | `PackageReference` `PdfPig` 0.1.16 |
-| `$(LocalDependencyDir)\PdfWorker\PDFtoImage.dll` 等 | `PackageReference` `PDFtoImage` 5.4.0 |
-| `ACadSharp` / `Newtonsoft.Json` / WebView2 本地 DLL | NuGet 包 |
-| 账户 / 授权服务 | `RemoteProfileStub` 最小桩（不联网、返回中性默认值） |
+1. 从生成工具程序集发现全部工具契约；
+2. 将 JSON 参数转换为宿主参数字典；
+3. 需要模型修改的调用封送到 Revit 主线程；
+4. 事务提交或回滚由工具宿主统一处理；
+5. 结果统一映射为 UI 的 `ToolInvocationResult`。
 
 ## 模型接入
 
-配置写在 `%LOCALAPPDATA%\RevitAi\settings.json`，API Key 以 Windows DPAPI 保护后存储。
+配置保存于 `%LOCALAPPDATA%\RevitAi\settings.json`，API Key 使用 Windows
+DPAPI 保护。
 
 ```json
 {
@@ -77,16 +56,47 @@ dotnet build host\hybrid-ui\RevitAi.Addin\RevitAi.Addin.csproj -c Release `
 }
 ```
 
-`ApiUrl` 兼容任何 OpenAI Chat Completions 形式的服务。首次使用时在界面的设置页填写地址、模型名与 Key，Key 由宿主加密后落盘。
+`OpenAiCompatibleModelClient` 支持 OpenAI Chat Completions、function tools、
+文本与图片附件，以及兼容网关。详见
+[docs/model-setup.md](docs/model-setup.md)。
 
-详见 [docs/model-setup.md](docs/model-setup.md)。
+## 构建
 
-## 界面
+前置条件：
 
-界面是 WebView2 承载的单页应用，宿主以 DockablePane 注册，前后端通过 `postMessage` 交换结构化消息。
+- Autodesk Revit 2027
+- .NET 10 SDK
+- 已初始化 `external/BIM-AI-Studio` 子模块
 
-详见 [docs/ui-architecture.md](docs/ui-architecture.md)。
+```powershell
+git clone --recurse-submodules https://github.com/zsl95903-ui/BIM-AI-Studio-App.git
+cd BIM-AI-Studio-App
+powershell -ExecutionPolicy Bypass -File .\host\hybrid-ui\build.ps1
+```
+
+Revit 或工具层位于其他目录时：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\host\hybrid-ui\build.ps1 `
+  -RevitApiDir "D:\Autodesk\Revit 2027" `
+  -ToolLayerDir "D:\src\BIM-AI-Studio\toolset"
+```
+
+## 验证范围
+
+- 工具层构建通过，完整冒烟测试为 355 项通过、0 项失败。
+- 当前 UI 已针对工具仓库 `toolset` 源码完成兼容编译。
+- `OpenAiCompatibleModelClient` 与 Agent 循环通过编译验证。
+- 真机模型上的完整写入矩阵、复杂 MEP、CAD 和外部模型服务仍需逐项验证。
+
+## 文档
+
+- [docs/project-status.md](docs/project-status.md)
+- [docs/model-setup.md](docs/model-setup.md)
+- [docs/ui-architecture.md](docs/ui-architecture.md)
+- [docs/ui-authoring-guide.md](docs/ui-authoring-guide.md)
 
 ## 许可
 
-自有代码采用 [Apache-2.0](LICENSE)。工具层为衍生作品，其许可边界见工具仓库的 `THIRD_PARTY_NOTICES.md`。
+项目自有代码采用 Apache-2.0。Autodesk Revit API 由用户本地安装提供，不随
+本仓库分发。NuGet 与运行时依赖继续适用各自许可证。

@@ -2,7 +2,6 @@ using System.Reflection;
 using System.Windows.Media.Imaging;
 using Autodesk.Revit.UI;
 using RevitAi.Addin.Commands;
-using RevitAi.CodexBridge;
 
 namespace RevitAi.Addin;
 
@@ -24,7 +23,6 @@ public sealed class RevitAiApplication : IExternalApplication
 
             CreateRibbon(application);
             AppServices.PipeServer.Start();
-            CodexBridgeApplication.Start(application);
 
             return Result.Succeeded;
         }
@@ -37,7 +35,6 @@ public sealed class RevitAiApplication : IExternalApplication
 
     public Result OnShutdown(UIControlledApplication application)
     {
-        CodexBridgeApplication.Stop();
         AppServices.Dispose();
         _application = null;
         return Result.Succeeded;

@@ -1,8 +1,7 @@
 namespace RevitAi.Core.Agent;
 
-// Mirrors the previous AIChatSession / SessionMessage model: the session keeps
-// the full message list (including tool messages) plus the accumulated summary
-// used to compress long conversations.
+// The session keeps the full message list, including tool messages, plus the
+// accumulated summary used to compress long conversations.
 public sealed class AgentSessionMessage
 {
     public required string Role { get; init; }

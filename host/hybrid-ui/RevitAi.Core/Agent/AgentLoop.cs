@@ -10,23 +10,18 @@ public sealed class AgentSpecialCommandResult
 
     public IReadOnlyList<ToolDefinition>? Tools { get; init; }
 
-    // The previous handler also injected a message (e.g. the skill list) into
-    // the conversation before retrying the round.
+    // Optional message injected by a host-specific command handler.
     public string? MessageRole { get; init; }
 
     public string? MessageContent { get; init; }
 }
 
-// Port of the previous chat pipeline
-// (Ext.Tools.UI.ViewModels.AIChatPanelViewModel.SendMessageAsync /
-//  ProcessMessageWithToolCallingAsync / PersistFullTurnToSession).
-//
-// The control flow mirrors the previous:
+// The agent pipeline:
 //   1. system prompt + history (compressed to first 50 + summary + last 50
 //      once the session exceeds 100 messages) + the new user message,
 //   2. one model call per round with the tool definitions,
 //   3. every tool call of a round is executed and answered before the next
-//      model call (the previous batches them the same way),
+//      model call,
 //   4. special commands (REQUEST_TOOLS / REQUEST_SKILL_LIST / ...) are handled
 //      and the round is repeated,
 //   5. the full turn is persisted into the session (tool messages included).
@@ -253,7 +248,7 @@ public sealed class AgentLoop : IDisposable
         }
     }
 
-    // Previous behaviour: keep the first 50 and the last 50 messages, compress
+    // Keep the first 50 and the last 50 messages, and compress
     // everything between them into one accumulated summary.
     private static void BuildHistory(
         AgentSessionState session,
