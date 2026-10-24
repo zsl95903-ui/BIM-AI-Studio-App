@@ -34,14 +34,17 @@ Git submodule 以源码方式引用 `external/BIM-AI-Studio/toolset`。
 ## 兼容层
 
 `host/hybrid-ui/RevitAi.Addin/Tools/ToolInvokerBridge.cs` 将当前 UI 的
-`IToolInvoker` 契约映射到工具仓库的 `IAIToolRegistry`、
-`AIToolInvocationHandler` 和 `RevitToolHost`：
+`IToolInvoker` 契约映射到工具仓库的共用 `BridgeRuntime` / `ToolDispatcher`，与独立 Bridge 使用同一目录与执行器：
 
-1. 从生成工具程序集发现全部工具契约；
-2. 将 JSON 参数转换为宿主参数字典；
-3. 需要模型修改的调用封送到 Revit 主线程；
+1. 合并 119 项启用主契约与 26 项专业扩展，共 145 个工具；
+2. 校验 JSON Schema 后将参数传给主契约或专业绘图实现；
+3. 通过 ExternalEvent 在实际执行前检查取消与目标文档身份；
 4. 事务提交或回滚由工具宿主统一处理；
-5. 结果统一映射为 UI 的 `ToolInvocationResult`。
+5. 结果统一映射为 UI 的 `ToolInvocationResult`，会话操作与外部 Agent 调用共用运行锁。
+
+取消不会撤销已经提交的操作；桥接支持请求去重、取消与状态查询。详见工具仓库的协议 3.0 文档。
+
+自动回归：`node tests/ui-regression.cjs` 与 `dotnet run --project tests/Agent.Runtime.Tests -c Release`。
 
 ## 模型接入
 
@@ -84,7 +87,7 @@ powershell -ExecutionPolicy Bypass -File .\host\hybrid-ui\build.ps1 `
 
 ## 验证范围
 
-- 工具层构建通过，完整冒烟测试为 355 项通过、0 项失败。
+- 工具层构建通过，完整冒烟测试为 352 项通过、0 项失败。
 - 当前 UI 已针对工具仓库 `toolset` 源码完成兼容编译。
 - `OpenAiCompatibleModelClient` 与 Agent 循环通过编译验证。
 - 真机模型上的完整写入矩阵、复杂 MEP、CAD 和外部模型服务仍需逐项验证。

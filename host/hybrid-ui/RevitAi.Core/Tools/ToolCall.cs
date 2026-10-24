@@ -8,6 +8,8 @@ public sealed class ToolCall
 
     public required string Name { get; init; }
 
+    public string? ExpectedDocumentGuid { get; set; }
+
     public required JsonObject Arguments { get; init; }
 }
 

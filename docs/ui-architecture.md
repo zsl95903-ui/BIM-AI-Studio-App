@@ -44,7 +44,7 @@ WebView2 (app.js)  ──postMessage──▶  AiPanelPage.cs  ──▶ AgentRu
 4. 直到模型不再请求工具，输出最终答复；
 5. 整轮结束后持久化会话。
 
-工具执行通过 `IToolInvoker` 抽象，因此同一循环既可走进程内工具注册表，也可走命名管道。
+工具执行通过 `IToolInvoker` 映射到工具仓库共用的 `BridgeRuntime`。App 与独立 Bridge 共用 145 项目录；每轮 Agent 绑定一个文档，取消或异常也保留已经完成的工具结果。服务级运行锁防止 UI 与外部 agent.chat 并发替换会话。
 
 > 当前模型客户端以 `stream = false` 请求，界面通过 `chat.progress` 与 `chat.toolResults` 展示步骤，而非逐 token 渲染。若需要真正的流式输出，应在客户端增加 SSE 解析并在界面增量追加。
 

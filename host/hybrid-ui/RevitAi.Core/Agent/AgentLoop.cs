@@ -94,6 +94,14 @@ public sealed class AgentLoop : IDisposable
         IReadOnlyList<AgentAttachment>? attachments = null)
     {
         var tools = _tools.Tools;
+        string? targetDocument = null;
+        if (tools.Any(t => t.Name == "get_document_snapshot"))
+        {
+            var snapshot = await _tools.InvokeAsync(new ToolCall { Id = Guid.NewGuid().ToString("N"), Name = "get_document_snapshot", Arguments = new() }, cancellationToken);
+            if (!snapshot.Success) throw new InvalidOperationException(snapshot.ErrorMessage);
+            targetDocument = snapshot.Payload["documentGuid"]?.GetValue<string>();
+            if (string.IsNullOrWhiteSpace(targetDocument)) throw new InvalidOperationException("Cannot bind this run to a document.");
+        }
         var systemPrompt = _systemPrompt;
         var conversation = new List<JsonObject>
         {
@@ -117,110 +125,114 @@ public sealed class AgentLoop : IDisposable
         var round = 0;
         var finalText = string.Empty;
 
-        while (true)
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            round++;
-            if (round > _maxRounds)
+            while (true)
             {
-                finalText =
-                    $"任务已达到 {_maxRounds} 轮工具调用上限，尚未全部完成。"
-                    + "已完成的操作以上方工具结果为准确认；如需继续，请再次发送“继续执行”。";
-                break;
-            }
-
-            if (progress is not null)
-            {
-                await progress(new AgentProgressEvent
+                cancellationToken.ThrowIfCancellationRequested();
+                round++;
+                if (round > _maxRounds)
                 {
-                    Kind = "round_started",
-                    Round = round,
-                    Message = round == 1
-                        ? "正在分析请求并选择工具..."
-                        : "正在根据工具结果继续分析..."
-                });
-            }
+                    finalText =
+                        $"任务已达到 {_maxRounds} 轮工具调用上限，尚未全部完成。"
+                        + "已完成的操作以上方工具结果为准确认；如需继续，请再次发送“继续执行”。";
+                    break;
+                }
 
-            var response = await _modelClient.CreateAsync(
-                new AgentModelRequest
+                if (progress is not null)
                 {
-                    Messages = conversation
-                        .Select(message => message.DeepClone().AsObject())
-                        .ToList(),
-                    Tools = tools,
-                    Model = _model,
-                    Attachments = round == 1
-                        ? attachments ?? Array.Empty<AgentAttachment>()
-                        : Array.Empty<AgentAttachment>()
-                },
-                cancellationToken);
+                    await progress(new AgentProgressEvent
+                    {
+                        Kind = "round_started",
+                        Round = round,
+                        Message = round == 1
+                            ? "正在分析请求并选择工具..."
+                            : "正在根据工具结果继续分析..."
+                    });
+                }
 
-            var content = response.Content ?? string.Empty;
-            if (string.IsNullOrEmpty(content) && response.ToolCalls.Count == 0)
-            {
-                finalText = "抱歉，AI 服务返回了空响应。请稍后再试。";
-                break;
-            }
-
-            if (response.ToolCalls.Count > 0)
-            {
-                await ExecuteToolCallsAsync(
-                    response.ToolCalls,
-                    content,
-                    conversation,
-                    toolResults,
-                    cancellationToken,
-                    progress);
-                session.RoundCount = round + 1;
-                session.UpdatedAt = DateTime.Now;
-                continue;
-            }
-
-            if (_specialCommandHandler is not null
-                && !string.IsNullOrWhiteSpace(content))
-            {
-                var commandResult = await _specialCommandHandler(
-                    content.Trim(),
+                var response = await _modelClient.CreateAsync(
+                    new AgentModelRequest
+                    {
+                        Messages = conversation
+                            .Select(message => message.DeepClone().AsObject())
+                            .ToList(),
+                        Tools = tools,
+                        Model = _model,
+                        Attachments = round == 1
+                            ? attachments ?? Array.Empty<AgentAttachment>()
+                            : Array.Empty<AgentAttachment>()
+                    },
                     cancellationToken);
-                if (commandResult is not null)
+
+                var content = response.Content ?? string.Empty;
+                if (string.IsNullOrEmpty(content) && response.ToolCalls.Count == 0)
                 {
-                    if (!string.IsNullOrWhiteSpace(commandResult.SystemPrompt)
-                        && !string.Equals(
-                            commandResult.SystemPrompt,
-                            systemPrompt,
-                            StringComparison.Ordinal))
-                    {
-                        systemPrompt = commandResult.SystemPrompt!;
-                        conversation[0] = new JsonObject
-                        {
-                            ["role"] = "system",
-                            ["content"] = systemPrompt
-                        };
-                    }
+                    finalText = "抱歉，AI 服务返回了空响应。请稍后再试。";
+                    break;
+                }
 
-                    if (commandResult.Tools is { Count: > 0 })
-                    {
-                        tools = commandResult.Tools;
-                    }
-
-                    if (!string.IsNullOrWhiteSpace(commandResult.MessageContent))
-                    {
-                        conversation.Add(new JsonObject
-                        {
-                            ["role"] = commandResult.MessageRole ?? "system",
-                            ["content"] = commandResult.MessageContent
-                        });
-                    }
-
+                if (response.ToolCalls.Count > 0)
+                {
+                    await ExecuteToolCallsAsync(
+                        response.ToolCalls,
+                        targetDocument,
+                        content,
+                        conversation,
+                        toolResults,
+                        cancellationToken,
+                        progress);
+                    session.RoundCount = round + 1;
+                    session.UpdatedAt = DateTime.Now;
                     continue;
                 }
+
+                if (_specialCommandHandler is not null
+                    && !string.IsNullOrWhiteSpace(content))
+                {
+                    var commandResult = await _specialCommandHandler(
+                        content.Trim(),
+                        cancellationToken);
+                    if (commandResult is not null)
+                    {
+                        if (!string.IsNullOrWhiteSpace(commandResult.SystemPrompt)
+                            && !string.Equals(
+                                commandResult.SystemPrompt,
+                                systemPrompt,
+                                StringComparison.Ordinal))
+                        {
+                            systemPrompt = commandResult.SystemPrompt!;
+                            conversation[0] = new JsonObject
+                            {
+                                ["role"] = "system",
+                                ["content"] = systemPrompt
+                            };
+                        }
+
+                        if (commandResult.Tools is { Count: > 0 })
+                        {
+                            tools = commandResult.Tools;
+                        }
+
+                        if (!string.IsNullOrWhiteSpace(commandResult.MessageContent))
+                        {
+                            conversation.Add(new JsonObject
+                            {
+                                ["role"] = commandResult.MessageRole ?? "system",
+                                ["content"] = commandResult.MessageContent
+                            });
+                        }
+
+                        continue;
+                    }
+                }
+
+                finalText = content;
+                break;
             }
 
-            finalText = content;
-            break;
         }
-
-        PersistTurn(session, conversation, turnStartIndex, finalText);
+        finally { PersistTurn(session, conversation, turnStartIndex, finalText); }
 
         if (progress is not null)
         {
@@ -353,6 +365,7 @@ public sealed class AgentLoop : IDisposable
 
     private async Task ExecuteToolCallsAsync(
         IReadOnlyList<ToolCall> calls,
+        string? targetDocument,
         string assistantContent,
         List<JsonObject> conversation,
         List<ToolInvocationResult> results,
@@ -362,62 +375,69 @@ public sealed class AgentLoop : IDisposable
         var toolCallNodes = new JsonArray();
         var toolMessages = new List<JsonObject>();
 
-        foreach (var call in calls)
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (progress is not null)
+            foreach (var call in calls)
             {
-                await progress(new AgentProgressEvent
+                cancellationToken.ThrowIfCancellationRequested();
+                if (progress is not null)
                 {
-                    Kind = "tool_started",
-                    ToolCall = call,
-                    Message = $"正在执行 {call.Name}..."
-                });
-            }
-
-            var result = await _tools.InvokeAsync(call, cancellationToken);
-            results.Add(result);
-
-            if (progress is not null)
-            {
-                await progress(new AgentProgressEvent
-                {
-                    Kind = "tool_completed",
-                    ToolCall = call,
-                    ToolResult = result,
-                    Message = result.Success
-                        ? $"{call.Name} 已完成"
-                        : $"{call.Name} 执行失败"
-                });
-            }
-
-            toolCallNodes.Add(new JsonObject
-            {
-                ["id"] = call.Id,
-                ["type"] = "function",
-                ["function"] = new JsonObject
-                {
-                    ["name"] = call.Name,
-                    ["arguments"] = call.Arguments.ToJsonString()
+                    await progress(new AgentProgressEvent
+                    {
+                        Kind = "tool_started",
+                        ToolCall = call,
+                        Message = $"正在执行 {call.Name}..."
+                    });
                 }
-            });
-            toolMessages.Add(new JsonObject
-            {
-                ["role"] = "tool",
-                ["tool_call_id"] = call.Id,
-                ["content"] = ToolResultFormatter.Format(result)
-            });
-        }
 
-        conversation.Add(new JsonObject
+                call.ExpectedDocumentGuid = targetDocument;
+                var result = await _tools.InvokeAsync(call, cancellationToken);
+                results.Add(result);
+
+                if (progress is not null)
+                {
+                    await progress(new AgentProgressEvent
+                    {
+                        Kind = "tool_completed",
+                        ToolCall = call,
+                        ToolResult = result,
+                        Message = result.Success
+                            ? $"{call.Name} 已完成"
+                            : $"{call.Name} 执行失败"
+                    });
+                }
+
+                toolCallNodes.Add(new JsonObject
+                {
+                    ["id"] = call.Id,
+                    ["type"] = "function",
+                    ["function"] = new JsonObject
+                    {
+                        ["name"] = call.Name,
+                        ["arguments"] = call.Arguments.ToJsonString()
+                    }
+                });
+                toolMessages.Add(new JsonObject
+                {
+                    ["role"] = "tool",
+                    ["tool_call_id"] = call.Id,
+                    ["content"] = ToolResultFormatter.Format(result)
+                });
+            }
+
+        }
+        finally
         {
-            ["role"] = "assistant",
-            ["content"] = string.IsNullOrWhiteSpace(assistantContent)
-                ? null
-                : assistantContent,
-            ["tool_calls"] = toolCallNodes
-        });
-        conversation.AddRange(toolMessages);
+            conversation.Add(new JsonObject
+            {
+                ["role"] = "assistant",
+                ["content"] = string.IsNullOrWhiteSpace(assistantContent)
+                    ? null
+                    : assistantContent,
+                ["tool_calls"] = toolCallNodes
+            });
+            conversation.AddRange(toolMessages);
+        }
     }
 
     // Original PersistFullTurnToSession: the whole turn (user message, every

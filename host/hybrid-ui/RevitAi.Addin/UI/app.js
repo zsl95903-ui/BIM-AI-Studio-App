@@ -55,6 +55,7 @@ const dom = {
 
 const toolCards = new Map();
 let activeAssistant = null;
+const pendingAssistants = [];
 
 function post(type, payload = {}) {
   if (window.chrome?.webview) {
@@ -222,6 +223,7 @@ function setBusy(value) {
 function resetChat() {
   toolCards.clear();
   activeAssistant = null;
+  pendingAssistants.length = 0;
   state.runId = null;
   setBusy(false);
   dom.messages.innerHTML = `
@@ -414,6 +416,11 @@ function bindQuickActions() {
 
 dom.composer.addEventListener("submit", event => {
   event.preventDefault();
+  if (state.busy && !dom.prompt.value.trim()) {
+    post("chat.cancel", { runId: state.runId });
+    dom.sendLabel.textContent = "正在停止…";
+    return;
+  }
   const text = dom.prompt.value.trim();
   if (!text) return;
 
@@ -457,9 +464,18 @@ dom.composer.addEventListener("submit", event => {
   addMessage("user", text);
   dom.prompt.value = "";
   resizePrompt();
-  activeAssistant = addAssistantPlaceholder();
+  const placeholder = addAssistantPlaceholder();
+  pendingAssistants.push(placeholder);
+  if (!state.busy) activeAssistant = placeholder;
   setBusy(true);
   post("chat", { text });
+});
+
+dom.send.addEventListener("click", event => {
+  if (!state.busy) return;
+  event.preventDefault();
+  post("chat.cancel", { runId: state.runId });
+  dom.sendLabel.textContent = "正在停止…";
 });
 
 dom.prompt.addEventListener("keydown", event => {
@@ -555,7 +571,7 @@ window.chrome?.webview?.addEventListener("message", event => {
   if (data.type === "chat.started") {
     state.runId = data.runId ?? state.runId;
     setBusy(true);
-    if (!activeAssistant) activeAssistant = addAssistantPlaceholder();
+    activeAssistant = pendingAssistants.shift() ?? addAssistantPlaceholder();
     return;
   }
 

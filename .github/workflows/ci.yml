@@ -35,6 +35,21 @@ jobs:
             Select-String -Pattern 'C:\\Users\\' -List
           if ($hits) { $hits | ForEach-Object { Write-Host $_.Path }; throw 'absolute user paths found' }
 
+  ui-and-agent:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node tests/ui-regression.cjs
+      - run: dotnet run --project tests/Agent.Runtime.Tests -c Release
+
   build:
     name: build (requires Revit 2027)
     runs-on: windows-latest
@@ -49,5 +64,5 @@ jobs:
       - name: Build host
         shell: pwsh
         run: |
-          dotnet build host\hybrid-ui\RevitAi.Addin\RevitAi.Addin.csproj -c Release -p:RevitApiDir=$env:REVIT_API_DIR
+          ./host/hybrid-ui/build.ps1 -RevitApiDir $env:REVIT_API_DIR
           if ($LASTEXITCODE -ne 0) { throw 'build failed' }

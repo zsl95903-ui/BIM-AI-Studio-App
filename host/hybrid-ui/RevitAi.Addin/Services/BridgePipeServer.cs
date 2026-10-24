@@ -1,8 +1,10 @@
+using System.Collections.Concurrent;
 using System.IO.Pipes;
 using System.IO;
 using System.Text;
 using System.Text.Json.Nodes;
 using RevitAi.Core.Tools;
+using BimAi.Protocol;
 
 namespace RevitAi.Addin.Services;
 
@@ -11,228 +13,102 @@ internal sealed class BridgePipeServer : IDisposable
     private readonly IToolInvoker _tools;
     private readonly AgentRuntimeService _agent;
     private readonly CancellationTokenSource _shutdown = new();
-    private readonly string _pipeName;
-    private readonly string _discoveryPath;
+    private readonly RequestJournal _journal = new();
+    private readonly ConcurrentDictionary<int, Task> _clients = new();
+    private readonly string _pipeName = $"RevitAi.{Environment.ProcessId}.{Guid.NewGuid():N}";
+    private readonly string _directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RevitAi");
     private Task? _serverTask;
-
-    public BridgePipeServer(IToolInvoker tools, AgentRuntimeService agent)
-    {
-        _tools = tools;
-        _agent = agent;
-        _pipeName = $"RevitAi.{Environment.ProcessId}.{Guid.NewGuid():N}";
-        _discoveryPath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "RevitAi",
-            "bridge.json");
-    }
-
+    private int _clientId;
+    public BridgePipeServer(IToolInvoker tools, AgentRuntimeService agent) { _tools = tools; _agent = agent; }
     public void Start()
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(_discoveryPath)!);
-        File.WriteAllText(
-            _discoveryPath,
-            new JsonObject
-            {
-                ["pipeName"] = _pipeName,
-                ["processId"] = Environment.ProcessId,
-                ["startedAt"] = DateTimeOffset.UtcNow
-            }.ToJsonString(),
-            Encoding.UTF8);
-
+        Directory.CreateDirectory(_directory);
+        var discovery = new JsonObject { ["pipeName"] = _pipeName, ["hostId"] = _pipeName, ["protocolVersion"] = BridgeProtocol.Version, ["processId"] = Environment.ProcessId, ["startedAt"] = DateTimeOffset.UtcNow };
+        foreach (var name in new[] { $"bridge.{Environment.ProcessId}.json", "bridge.json" })
+        {
+            var path = Path.Combine(_directory, name);
+            File.WriteAllText(path + ".tmp", discovery.ToJsonString(), new UTF8Encoding(false));
+            File.Move(path + ".tmp", path, true);
+        }
         _serverTask = Task.Run(() => RunAsync(_shutdown.Token));
     }
-
     public void Dispose()
     {
         _shutdown.Cancel();
-
-        try
+        foreach (var name in new[] { $"bridge.{Environment.ProcessId}.json", "bridge.json" })
         {
-            _serverTask?.Wait(TimeSpan.FromSeconds(2));
+            var path = Path.Combine(_directory, name);
+            try { if (File.Exists(path) && JsonNode.Parse(File.ReadAllText(path))?["pipeName"]?.GetValue<string>() == _pipeName) File.Delete(path); } catch { }
         }
-        catch
-        {
-            // The process is shutting down.
-        }
-
-        _shutdown.Dispose();
-
-        try
-        {
-            if (File.Exists(_discoveryPath))
-            {
-                File.Delete(_discoveryPath);
-            }
-        }
-        catch
-        {
-            // Discovery cleanup is best-effort.
-        }
+        // Do not block the Revit thread waiting for queued ExternalEvents.
     }
-
-    private async Task RunAsync(CancellationToken cancellationToken)
+    private async Task RunAsync(CancellationToken token)
     {
-        while (!cancellationToken.IsCancellationRequested)
+        while (!token.IsCancellationRequested)
         {
+            NamedPipeServerStream? pipe = null;
             try
             {
-                await using var pipe = new NamedPipeServerStream(
-                    _pipeName,
-                    PipeDirection.InOut,
-                    1,
-                    PipeTransmissionMode.Byte,
-                    PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
-
-                await pipe.WaitForConnectionAsync(cancellationToken);
-                using var reader = new StreamReader(
-                    pipe,
-                    Encoding.UTF8,
-                    leaveOpen: true);
-                await using var writer = new StreamWriter(
-                    pipe,
-                    new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
-                    leaveOpen: true)
-                {
-                    AutoFlush = true
-                };
-
-                while (pipe.IsConnected
-                       && !cancellationToken.IsCancellationRequested)
-                {
-                    var line = await reader.ReadLineAsync(cancellationToken);
-                    if (line is null)
-                    {
-                        break;
-                    }
-
-                    var response = await HandleRequestAsync(
-                        line,
-                        cancellationToken);
-                    await writer.WriteLineAsync(response.ToJsonString());
-                }
+                pipe = new(_pipeName, PipeDirection.InOut, 8, PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+                await pipe.WaitForConnectionAsync(token);
+                var id = Interlocked.Increment(ref _clientId);
+                var client = HandleClientAsync(pipe, token);
+                pipe = null;
+                _clients[id] = client;
+                _ = client.ContinueWith(completed => { _clients.TryRemove(id, out _); }, TaskScheduler.Default);
             }
-            catch (OperationCanceledException)
-                when (cancellationToken.IsCancellationRequested)
-            {
-                return;
-            }
-            catch
-            {
-                // A disconnected client must not stop the bridge listener.
-                try
-                {
-                    await Task.Delay(250, cancellationToken);
-                }
-                catch (OperationCanceledException)
-                {
-                    return;
-                }
-            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
+            catch { if (!token.IsCancellationRequested) await Task.Delay(100, token); }
+            finally { pipe?.Dispose(); }
         }
     }
-
-    private async Task<JsonObject> HandleRequestAsync(
-        string requestJson,
-        CancellationToken cancellationToken)
+    private async Task HandleClientAsync(NamedPipeServerStream pipe, CancellationToken token)
     {
+        await using (pipe)
+        {
+            using var reader = new StreamReader(pipe, Encoding.UTF8, leaveOpen: true);
+            await using var writer = new StreamWriter(pipe, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true };
+            try
+            {
+                var line = await reader.ReadLineAsync(token);
+                if (line is not null) await writer.WriteLineAsync((await HandleAsync(line, token)).ToJsonString());
+            }
+            catch (OperationCanceledException) { }
+            catch (IOException) { }
+        }
+    }
+    private async Task<JsonObject> HandleAsync(string json, CancellationToken shutdown)
+    {
+        string? id = null;
         try
         {
-            var request = JsonNode.Parse(requestJson)?.AsObject()
-                ?? throw new InvalidOperationException("Invalid JSON request.");
-
-            var type = request["type"]?.GetValue<string>();
-
-            if (type == "agent.status")
+            var request = JsonNode.Parse(json)!.AsObject();
+            var type = request["type"]?.GetValue<string>() ?? "invoke";
+            id = request["requestId"]?.GetValue<string>() ?? Guid.NewGuid().ToString("N");
+            if (type == "request.cancel") return _journal.Cancel(id);
+            if (type == "request.status") return _journal.Status(id);
+            if (request["hostId"] is JsonValue host && host.GetValue<string>() != _pipeName) return BridgeProtocol.Error(id, "host_mismatch", "The target host changed.");
+            if (request["protocolVersion"] is JsonValue version && version.GetValue<string>() != BridgeProtocol.Version) return BridgeProtocol.Error(id, "protocol_mismatch", "Unsupported protocol version.");
+            if (type == "agent.status") return new() { ["success"] = true, ["status"] = _agent.GetStatus(), ["hostId"] = _pipeName, ["protocolVersion"] = BridgeProtocol.Version };
+            if (type == "tools.list") return new() { ["success"] = true, ["tools"] = _agent.GetStatus()["tools"]!.DeepClone(), ["protocolVersion"] = BridgeProtocol.Version };
+            if (type == "agent.test") return new() { ["success"] = true, ["result"] = await _agent.TestConnectionAsync(shutdown) };
+            if (type is not ("invoke" or "agent.chat")) return BridgeProtocol.Error(id, "invalid_request", "Unsupported request type.");
+            var requestId = id;
+            return await _journal.ExecuteAsync(id, json, async token =>
             {
-                return new JsonObject
+                if (type == "agent.chat")
                 {
-                    ["type"] = "agent.status",
-                    ["success"] = true,
-                    ["status"] = _agent.GetStatus()
-                };
-            }
-
-            if (type == "agent.test")
-            {
-                var agentResult = await _agent.TestConnectionAsync(cancellationToken);
-                return new JsonObject
-                {
-                    ["type"] = "agent.test",
-                    ["success"] = true,
-                    ["result"] = agentResult
-                };
-            }
-
-            if (type == "agent.chat")
-            {
-                var message = request["message"]?.GetValue<string>()
-                    ?? throw new InvalidOperationException("Missing 'message'.");
-                var chatResult = await _agent.RunAsync(message, cancellationToken);
-                return new JsonObject
-                {
-                    ["type"] = "agent.chat",
-                    ["success"] = true,
-                    ["finalText"] = chatResult.FinalText,
-                    ["rounds"] = chatResult.Rounds,
-                    ["toolResults"] = new JsonArray(
-                        chatResult.ToolResults.Select(item => new JsonObject
-                        {
-                            ["toolCallId"] = item.ToolCallId,
-                            ["toolName"] = item.ToolName,
-                            ["success"] = item.Success,
-                            ["payload"] = item.Payload.DeepClone(),
-                            ["errorCode"] = item.ErrorCode,
-                            ["errorMessage"] = item.ErrorMessage
-                        }).Cast<JsonNode?>().ToArray())
-                };
-            }
-
-            if (type != "invoke")
-            {
-                return Error(
-                    null,
-                    "invalid_request",
-                    "Supported types: invoke, agent.status, agent.test, agent.chat.");
-            }
-
-            var toolName = request["tool"]?.GetValue<string>()
-                ?? throw new InvalidOperationException("Missing 'tool'.");
-            var arguments = request["arguments"]?.AsObject() ?? new JsonObject();
-            var call = new ToolCall
-            {
-                Id = request["requestId"]?.GetValue<string>() ?? Guid.NewGuid().ToString("N"),
-                Name = toolName,
-                Arguments = arguments
-            };
-
-            var result = await _tools.InvokeAsync(call, cancellationToken);
-            return new JsonObject
-            {
-                ["type"] = "result",
-                ["requestId"] = call.Id,
-                ["success"] = result.Success,
-                ["tool"] = result.ToolName,
-                ["durationMs"] = result.Duration.TotalMilliseconds,
-                ["payload"] = result.Payload.DeepClone(),
-                ["errorCode"] = result.ErrorCode,
-                ["errorMessage"] = result.ErrorMessage
-            };
+                    var chat = await _agent.RunAsync(request["message"]!.GetValue<string>(), token);
+                    return new() { ["success"] = true, ["requestId"] = requestId, ["finalText"] = chat.FinalText, ["state"] = "completed" };
+                }
+                var name = request["tool"]!.GetValue<string>();
+                var definition = _tools.Tools.FirstOrDefault(t => t.Name == name);
+                var expected = request["expectedDocumentGuid"]?.GetValue<string>();
+                if (definition?.Mutating == true && string.IsNullOrWhiteSpace(expected)) return BridgeProtocol.Error(requestId, "document_required", "Bind mutations to expectedDocumentGuid.");
+                var result = await _tools.InvokeAsync(new() { Id = requestId, Name = name, Arguments = request["arguments"]?.DeepClone().AsObject() ?? new(), ExpectedDocumentGuid = expected }, token);
+                return new() { ["type"] = "result", ["requestId"] = requestId, ["tool"] = name, ["success"] = result.Success, ["payload"] = result.Payload.DeepClone(), ["errorCode"] = result.ErrorCode, ["errorMessage"] = result.ErrorMessage, ["state"] = result.Success ? "completed" : "failed", ["protocolVersion"] = BridgeProtocol.Version, ["hostId"] = _pipeName };
+            }, shutdown);
         }
-        catch (Exception ex)
-        {
-            return Error(null, "bridge_error", ex.GetBaseException().Message);
-        }
-    }
-
-    private static JsonObject Error(string? requestId, string code, string message)
-    {
-        return new JsonObject
-        {
-            ["type"] = "error",
-            ["requestId"] = requestId,
-            ["success"] = false,
-            ["errorCode"] = code,
-            ["errorMessage"] = message
-        };
+        catch (Exception ex) { return BridgeProtocol.Error(id, "bridge_error", ex.GetBaseException().Message); }
     }
 }

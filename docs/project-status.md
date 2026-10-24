@@ -22,7 +22,7 @@ WebView2 application shell, build scripts, and documentation.
 ## Verification
 
 - The toolset build completes against Revit 2027.
-- The smoke suite currently reports 355 passed assertions and 0 failures.
+- The smoke suite currently reports 352 passed assertions and 0 failures.
 - The application compatibility layer compiles against the toolset source.
 - The MCP server and Revit bridge compile independently.
 

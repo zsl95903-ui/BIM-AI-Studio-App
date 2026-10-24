@@ -8,6 +8,7 @@ namespace RevitAi.Addin.Services;
 internal sealed class AgentRuntimeService : IDisposable
 {
     private readonly IToolInvoker _tools;
+    private readonly SemaphoreSlim _sessionGate = new(1, 1);
     private readonly AttachmentPreprocessor _attachmentPreprocessor = new();
     private readonly RuntimeSettingsStore _settingsStore = new();
     private readonly AgentSessionStore _sessionStore = new();
@@ -38,27 +39,24 @@ internal sealed class AgentRuntimeService : IDisposable
         Func<AgentProgressEvent, Task>? progress = null,
         IReadOnlyList<AgentAttachment>? attachments = null)
     {
-        _agentLoop ??= CreateAgentLoop();
-        var preparedAttachments = await _attachmentPreprocessor.PrepareAsync(
-            attachments ?? Array.Empty<AgentAttachment>(),
-            cancellationToken);
-
-        // The ported original loop persists the whole turn (user message, every
-        // tool exchange and the final answer) into the session by itself.
-        var result = await _agentLoop.RunAsync(
-            _session,
-            prompt,
-            cancellationToken,
-            progress,
-            preparedAttachments);
-
-        // Persist the session after every completed turn.
-        _sessionStore.Save(_session);
-        return result;
+        if (!await _sessionGate.WaitAsync(0, cancellationToken)) throw new InvalidOperationException("Another agent run or session operation is active.");
+        var session = _session;
+        try
+        {
+            _agentLoop ??= CreateAgentLoop();
+            var prepared = await _attachmentPreprocessor.PrepareAsync(attachments ?? [], cancellationToken);
+            return await _agentLoop.RunAsync(session, prompt, cancellationToken, progress, prepared);
+        }
+        finally
+        {
+            try { _sessionStore.Save(session); }
+            finally { _sessionGate.Release(); }
+        }
     }
 
     public void Reset()
     {
+        using var lease = AcquireSession();
         _session.Clear();
     }
 
@@ -84,12 +82,14 @@ internal sealed class AgentRuntimeService : IDisposable
 
     public JsonObject SaveCurrentSession()
     {
+        using var lease = AcquireSession();
         _sessionStore.Save(_session);
         return GetStatus();
     }
 
     public JsonObject NewSession()
     {
+        using var lease = AcquireSession();
         _sessionStore.Save(_session);
         _session = new AgentSessionState();
         return GetStatus();
@@ -97,6 +97,7 @@ internal sealed class AgentRuntimeService : IDisposable
 
     public JsonObject OpenSession(string sessionId)
     {
+        using var lease = AcquireSession();
         var loaded = _sessionStore.Load(sessionId);
         if (loaded is not null)
         {
@@ -109,6 +110,7 @@ internal sealed class AgentRuntimeService : IDisposable
 
     public JsonObject DeleteSession(string sessionId)
     {
+        using var lease = AcquireSession();
         _sessionStore.Delete(sessionId);
         if (string.Equals(sessionId, _session.SessionId, StringComparison.Ordinal))
         {
@@ -120,6 +122,7 @@ internal sealed class AgentRuntimeService : IDisposable
 
     public (bool Success, string Message) ExportCurrentSession()
     {
+        using var lease = AcquireSession();
         if (_session.Messages.Count == 0)
         {
             return (false, "当前会话还没有内容。");
@@ -233,7 +236,8 @@ internal sealed class AgentRuntimeService : IDisposable
                         ["toolSet"] = x.ToolSet,
                         ["mutating"] = x.Mutating,
                         ["requiresTransaction"] = x.RequiresTransaction,
-                        ["supportsDryRun"] = x.SupportsDryRun
+                        ["supportsDryRun"] = x.SupportsDryRun,
+                        ["inputSchema"] = x.InputSchema.DeepClone()
                     })
                     .Cast<JsonNode?>()
                     .ToArray())
@@ -245,6 +249,7 @@ internal sealed class AgentRuntimeService : IDisposable
         string? apiKey,
         string model)
     {
+        using var lease = AcquireSession();
         if (string.IsNullOrWhiteSpace(apiUrl))
         {
             throw new ArgumentException("API URL is required.");
@@ -264,6 +269,7 @@ internal sealed class AgentRuntimeService : IDisposable
         }
 
         _settingsStore.Save(_settings);
+        _agentLoop?.Dispose();
         _agentLoop = null;
         return GetStatus();
     }
@@ -308,6 +314,13 @@ internal sealed class AgentRuntimeService : IDisposable
         _agentLoop?.Dispose();
         _agentLoop = null;
     }
+
+    private IDisposable AcquireSession()
+    {
+        if (!_sessionGate.Wait(0)) throw new InvalidOperationException("Session is busy; stop the current task before changing sessions or settings.");
+        return new SessionLease(_sessionGate);
+    }
+    private sealed class SessionLease(SemaphoreSlim gate) : IDisposable { public void Dispose() => gate.Release(); }
 
     private AgentLoop CreateAgentLoop()
     {

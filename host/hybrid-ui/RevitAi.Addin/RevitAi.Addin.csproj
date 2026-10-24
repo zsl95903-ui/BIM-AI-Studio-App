@@ -14,6 +14,10 @@
     <RevitInstallDir Condition="'$(RevitInstallDir)' == ''">$(RevitApiDir)</RevitInstallDir>
   </PropertyGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="$(ToolLayerDir)\..\src\ReVitAI.Bridge\ReVitAI.Bridge.csproj" />
+  </ItemGroup>
+
   <!-- Tool layer is consumed as source, not as a prebuilt payload. -->
   <ItemGroup>
     <ProjectReference Include="..\RevitAi.Core\RevitAi.Core.csproj" />

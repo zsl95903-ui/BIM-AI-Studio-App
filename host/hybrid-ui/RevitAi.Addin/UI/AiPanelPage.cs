@@ -18,6 +18,7 @@ internal sealed class AiPanelPage : Page, IDockablePaneProvider, IDisposable
     private CancellationTokenSource? _chatCancellation;
     private CancellationTokenSource? _codexCancellation;
     private Task _chatTask = Task.CompletedTask;
+    private readonly SemaphoreSlim _submissionGate = new(1, 1);
     private int _runSequence;
     private bool _initialized;
 
@@ -125,7 +126,8 @@ internal sealed class AiPanelPage : Page, IDockablePaneProvider, IDisposable
                     break;
 
                 case "chat.cancel":
-                    _chatCancellation?.Cancel();
+                    if (message["runId"] is null || message["runId"]!.GetValue<int>() == _runSequence)
+                        _chatCancellation?.Cancel();
                     break;
 
                 case "attachment.add":
@@ -146,11 +148,13 @@ internal sealed class AiPanelPage : Page, IDockablePaneProvider, IDisposable
                     break;
 
                 case "reset":
-                    await CancelRunningChatAsync();
-                    AppServices.Agent.Reset();
-                    Post(new JsonObject
+                    await ChangeSessionAsync(() =>
                     {
-                        ["type"] = "chat.reset"
+                        AppServices.Agent.Reset();
+                        Post(new JsonObject
+                        {
+                            ["type"] = "chat.reset"
+                        });
                     });
                     break;
 
@@ -201,10 +205,13 @@ internal sealed class AiPanelPage : Page, IDockablePaneProvider, IDisposable
                     break;
 
                 case "sessions.new":
-                    PostSessions(
-                        "sessions.updated",
-                        "已新建会话。",
-                        AppServices.Agent.NewSession());
+                    await ChangeSessionAsync(() =>
+                    {
+                        PostSessions(
+                            "sessions.updated",
+                            "已新建会话。",
+                            AppServices.Agent.NewSession());
+                    });
                     break;
 
                 case "sessions.save":
@@ -215,19 +222,25 @@ internal sealed class AiPanelPage : Page, IDockablePaneProvider, IDisposable
                     break;
 
                 case "sessions.open":
-                    PostSessions(
-                        "sessions.updated",
-                        "已打开会话。",
-                        AppServices.Agent.OpenSession(
-                            message["sessionId"]?.GetValue<string>() ?? string.Empty));
+                    await ChangeSessionAsync(() =>
+                    {
+                        PostSessions(
+                            "sessions.updated",
+                            "已打开会话。",
+                            AppServices.Agent.OpenSession(
+                                message["sessionId"]?.GetValue<string>() ?? string.Empty));
+                    });
                     break;
 
                 case "sessions.delete":
-                    PostSessions(
-                        "sessions.updated",
-                        "已删除会话。",
-                        AppServices.Agent.DeleteSession(
-                            message["sessionId"]?.GetValue<string>() ?? string.Empty));
+                    await ChangeSessionAsync(() =>
+                    {
+                        PostSessions(
+                            "sessions.updated",
+                            "已删除会话。",
+                            AppServices.Agent.DeleteSession(
+                                message["sessionId"]?.GetValue<string>() ?? string.Empty));
+                    });
                     break;
 
                 case "sessions.export":
@@ -264,32 +277,32 @@ internal sealed class AiPanelPage : Page, IDockablePaneProvider, IDisposable
         _pendingAttachments.Clear();
         PostAttachments();
 
-        // Only one agent run may be active at a time: cancel whatever is still
-        // running and wait for it to unwind before starting the new prompt.
-        await CancelRunningChatAsync();
-
-        var cancellation = new CancellationTokenSource();
-        _chatCancellation = cancellation;
-        var runId = Interlocked.Increment(ref _runSequence);
-        var run = RunChatCoreAsync(
-            prompt,
-            runId,
-            attachments,
-            cancellation.Token);
-        _chatTask = run;
+        Task run;
+        CancellationTokenSource cancellation;
+        await _submissionGate.WaitAsync();
         try
         {
-            await run;
+            await CancelRunningChatAsync();
+            cancellation = new CancellationTokenSource();
+            _chatCancellation = cancellation;
+            var runId = Interlocked.Increment(ref _runSequence);
+            run = RunChatCoreAsync(prompt, runId, attachments, cancellation.Token);
+            _chatTask = run;
         }
+        finally { _submissionGate.Release(); }
+        try { await run; }
         finally
         {
-            if (ReferenceEquals(_chatCancellation, cancellation))
-            {
-                _chatCancellation = null;
-            }
-
+            if (ReferenceEquals(_chatCancellation, cancellation)) _chatCancellation = null;
             cancellation.Dispose();
         }
+    }
+
+    private async Task ChangeSessionAsync(Action change)
+    {
+        await _submissionGate.WaitAsync();
+        try { await CancelRunningChatAsync(); change(); }
+        finally { _submissionGate.Release(); }
     }
 
     private async Task CancelRunningChatAsync()
