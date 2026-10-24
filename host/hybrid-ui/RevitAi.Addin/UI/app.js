@@ -74,31 +74,83 @@ function escapeHtml(value) {
 }
 
 function renderMarkdown(value) {
-  const source = String(value ?? "");
-  const codeBlocks = [];
-  let text = source.replace(/```([A-Za-z0-9_+-]*)\n?([\s\S]*?)```/g, (_, language, code) => {
-    const token = `@@CODE_BLOCK_${codeBlocks.length}@@`;
-    codeBlocks.push(
-      `<pre><code data-language="${escapeHtml(language)}">${escapeHtml(code.trim())}</code></pre>`
-    );
-    return token;
-  });
+  const inline = text => {
+    const tokens = [];
+    const token = html => { tokens.push(html); return `\u0000${tokens.length - 1}\u0000`; };
+    text = String(text).replace(/\u0000/g, "").replace(/`([^`\n]+)`/g, (_, code) => token(`<code>${escapeHtml(code)}</code>`));
+    text = text.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s<>"')]+)\)/g, (_, label, url) =>
+      token(`<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`));
+    return escapeHtml(text).replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/\u0000(\d+)\u0000/g, (_, n) => tokens[Number(n)]);
+  };
+  const lines = String(value ?? "").replace(/\r\n/g, "\n").split("\n");
+  const output = [];
+  const cells = line => line.trim().replace(/^\||\|$/g, "").split("|").map(x => x.trim());
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) { i++; continue; }
+    const fence = line.match(/^```([\w+-]*)\s*$/);
+    if (fence) {
+      const code = []; i++;
+      while (i < lines.length && !/^```\s*$/.test(lines[i])) code.push(lines[i++]);
+      if (i < lines.length) i++;
+      output.push(`<pre><code data-language="${escapeHtml(fence[1])}">${escapeHtml(code.join("\n"))}</code></pre>`);
+      continue;
+    }
+    if (line.includes('|') && i + 1 < lines.length && /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(lines[i+1])) {
+      const header = cells(line); i += 2;
+      const rows = [];
+      while (i < lines.length && lines[i].includes('|') && lines[i].trim()) rows.push(cells(lines[i++]));
+      output.push(`<div class="table-scroll"><table><thead><tr>${header.map(c=>`<th>${inline(c)}</th>`).join('')}</tr></thead><tbody>${rows.map(row=>`<tr>${header.map((_,n)=>`<td>${inline(row[n] ?? '')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`);
+      continue;
+    }
+    const heading = line.match(/^(#{1,6})\s+(.+)$/);
+    if (heading) { output.push(`<h${heading[1].length}>${inline(heading[2])}</h${heading[1].length}>`); i++; continue; }
+    if (/^\s*>\s?/.test(line)) {
+      const quote = [];
+      while (i < lines.length && /^\s*>\s?/.test(lines[i])) quote.push(inline(lines[i++].replace(/^\s*>\s?/,'')));
+      output.push(`<blockquote>${quote.join('<br>')}</blockquote>`); continue;
+    }
+    const list = line.match(/^\s*(?:([-*])|\d+[.)])\s+(.+)$/);
+    if (list) {
+      const ordered = !list[1], items = [], pattern = ordered ? /^\s*\d+[.)]\s+(.+)$/ : /^\s*[-*]\s+(.+)$/;
+      while (i < lines.length && pattern.test(lines[i])) items.push(`<li>${inline(lines[i++].match(pattern)[1])}</li>`);
+      const tag = ordered ? 'ol' : 'ul'; output.push(`<${tag}>${items.join('')}</${tag}>`); continue;
+    }
+    output.push(`<p>${inline(line)}</p>`); i++;
+  }
+  return output.join('');
+}
 
-  text = escapeHtml(text);
-  text = text.replace(/`([^`\n]+)`/g, "<code>$1</code>");
-  text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  text = text
-    .replace(/^###\s+(.+)$/gm, "<strong>$1</strong>")
-    .replace(/^##\s+(.+)$/gm, "<strong>$1</strong>")
-    .replace(/^#\s+(.+)$/gm, "<strong>$1</strong>");
-  text = text.replace(/^\s*[-*]\s+(.+)$/gm, "• $1");
-
-  const paragraphs = text
-    .split(/\n{2,}/)
-    .map(paragraph => `<p>${paragraph.replace(/\n/g, "<br>")}</p>`)
-    .join("");
-
-  return paragraphs.replace(/@@CODE_BLOCK_(\d+)@@/g, (_, index) => codeBlocks[Number(index)] ?? "");
+function restoreTranscript(messages) {
+  resetChat();
+  for (const message of messages ?? []) {
+    if ((message.role === 'user' || message.role === 'assistant') && message.content) addMessage(message.role, message.content);
+    for (const call of message.toolCalls ?? []) {
+      let args = {};
+      try { args = JSON.parse(call.argumentsJson || '{}'); } catch { args = { raw: call.argumentsJson }; }
+      addProgress({ kind: 'tool_started', tool: { id: call.id, name: call.name, arguments: args } });
+    }
+    if (message.role === 'tool') {
+      const card = toolCards.get(message.toolCallId);
+      if (!card) continue;
+      let result;
+      try { result = JSON.parse(message.content); } catch { result = null; }
+      if (result && typeof result.success === 'boolean') updateToolCard(card, result);
+      else {
+        card.classList.remove('running');
+        card.querySelector('summary').textContent = '历史工具记录';
+        card.querySelector('.payload').textContent = message.content ?? '';
+      }
+    }
+  }
+  for (const card of toolCards.values()) {
+    if (card.classList.contains?.('running')) {
+      card.classList.remove('running');
+      card.querySelector('summary').textContent = '工具没有完成结果，请查询模型确认';
+    }
+  }
 }
 
 function hideWelcome() {
@@ -111,10 +163,16 @@ function renderAttachments() {
   dom.attachmentList.innerHTML = items.map(item => `
     <div class="attachment-chip">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 12 6.5-6.5a3 3 0 0 1 4.2 4.2L11 18.4a5 5 0 0 1-7.1-7.1l8.2-8.2"/></svg>
-      <span title="${escapeHtml(item.fileName)}">${escapeHtml(item.fileName)}</span>
+      <span title="${escapeHtml(item.fileName)}">${escapeHtml(item.fileName)} · ${Math.ceil((item.size ?? 0)/1024)} KB</span>
+      <button type="button" data-remove="${escapeHtml(item.attachmentId)}" aria-label="移除 ${escapeHtml(item.fileName)}">×</button>
     </div>
   `).join("");
 }
+
+dom.attachmentList.addEventListener("click", event => {
+  const button = event.target.closest("button[data-remove]");
+  if (button) post("attachment.remove", { attachmentId: button.dataset.remove });
+});
 
 function scrollToBottom() {
   dom.messages.scrollTop = dom.messages.scrollHeight;
@@ -207,8 +265,24 @@ function updateToolCard(card, item) {
     <span>${item.success ? "完成" : "失败"} · ${duration} ms</span>
   `;
   card.querySelector(".payload").textContent = JSON.stringify(item, null, 2);
+  let view = card.querySelector(".tool-result");
+  if (!view) { view = document.createElement("div"); view.className = "tool-result"; card.appendChild(view); }
+  view.innerHTML = renderToolPayload(item.payload ?? {});
   card.open = item.success === false;
   scrollToBottom();
+}
+
+function renderToolPayload(payload) {
+  const data = payload.data ?? payload;
+  const rows = Array.isArray(data) ? data : Object.values(data).find(value => Array.isArray(value) && value.length && typeof value[0] === "object");
+  let html = typeof data.message === "string" ? renderMarkdown(data.message) : "";
+  if (Array.isArray(rows) && rows.length && rows[0] && typeof rows[0] === "object") {
+    const columns = [...new Set(rows.slice(0, 50).flatMap(row => row && typeof row === "object" ? Object.keys(row) : []))].slice(0, 8);
+    html += '<div class="table-scroll"><table><thead><tr>' + columns.map(key => '<th>' + escapeHtml(key) + '</th>').join('') + '</tr></thead><tbody>';
+    html += rows.slice(0, 50).map(row => '<tr>' + columns.map(key => '<td>' + escapeHtml(typeof row?.[key] === 'object' ? JSON.stringify(row[key]) : row?.[key]) + '</td>').join('') + '</tr>').join('');
+    html += '</tbody></table></div>' + (rows.length > 50 ? '<p>仅展示前 50 条，完整数据见上方 JSON。</p>' : '');
+  }
+  return html;
 }
 
 function setBusy(value) {
@@ -269,17 +343,18 @@ function closeSettings() {
 
 function renderKnowledge() {
   const configured = state.agent?.configured === true;
+  const tested = Boolean(state.agent?.connectionTestedAt);
   const toolsReady = state.agent?.toolsReady === true;
   const model = state.agent?.model || "deepseek-flash";
 
-  dom.connectionChip.classList.toggle("online", configured && toolsReady);
+  dom.connectionChip.classList.toggle("online", tested && toolsReady);
   dom.connectionChip.classList.toggle("error", Boolean(state.agent) && !configured);
   dom.connectionText.textContent = configured
-    ? (toolsReady ? "已连接" : "待初始化")
+    ? (toolsReady ? (tested ? "连接测试通过" : "已配置 · 未测试") : "待初始化")
     : "未配置";
   dom.modelLabel.textContent = model;
   dom.apiStatus.textContent = configured
-    ? (toolsReady ? `${model} · 本地直连` : "模型已连接，等待 Revit 工具初始化")
+    ? (toolsReady ? `${model} · ${tested ? "API 测试通过" : "API 尚未测试"}` : "已配置，等待 Revit 工具初始化")
     : "请先配置模型 API";
 
   if (state.agent) {
@@ -291,7 +366,7 @@ function renderKnowledge() {
   }
 
   if (dom.buildLabel) {
-    dom.buildLabel.textContent = state.agent?.build || "v9.2-external-rename";
+    dom.buildLabel.textContent = state.agent?.build || "bridge-3-ui";
   }
 }
 
@@ -328,6 +403,8 @@ function renderTools() {
         ${item.mutating ? '<span class="tool-tag">会修改模型</span>' : ""}
       </strong>
       <p>${escapeHtml(item.description)}</p>
+      <span class="tool-tag">${item.supportsDryRun ? "支持预演" : "不支持预演"}</span>
+      <details><summary>参数格式</summary><pre>${escapeHtml(JSON.stringify(item.inputSchema ?? {}, null, 2))}</pre></details>
     </article>
   `).join("") || '<p class="progress-line">没有匹配的工具。</p>';
 
@@ -348,7 +425,7 @@ function renderSkills() {
       <code>${escapeHtml(skill.name)}${variables ? " · 变量: " + escapeHtml(variables) : ""}</code>
     </article>`;
       }).join("")
-    : '<p class="progress-line">没有可用技能。</p>';
+    : '<p class="progress-line">此版本暂未接入技能库，可通过上方工具完成操作。</p>';
 
   dom.skillList.querySelectorAll(".skill-item").forEach(item => {
     item.addEventListener("click", () => {
@@ -594,6 +671,7 @@ window.chrome?.webview?.addEventListener("message", event => {
 
   if (data.type === "chat.toolResults") {
     (data.items ?? []).forEach(item => {
+      if (!toolCards.has(item.toolCallId)) addProgress({ kind: "tool_started", tool: { id: item.toolCallId, name: item.toolName } });
       const existing = toolCards.get(item.toolCallId);
       if (existing) updateToolCard(existing, item);
     });
@@ -607,6 +685,7 @@ window.chrome?.webview?.addEventListener("message", event => {
   if (data.type === "chat.response") {
     if (activeAssistant) {
       activeAssistant.querySelector(".message-body").innerHTML = renderMarkdown(data.message);
+      dom.messages.appendChild(activeAssistant);
       activeAssistant = null;
       scrollToBottom();
     } else {
@@ -655,20 +734,23 @@ window.chrome?.webview?.addEventListener("message", event => {
   }
 
   if (data.type === "settings.error") {
-    dom.settingsStatus.textContent = `连接失败：${data.message}`;
+    if (state.agent) state.agent.connectionTestedAt = null;
+    renderKnowledge();
+    dom.settingsStatus.textContent = `操作失败：${data.message}`;
   }
 
   if (data.type === "sessions.list" || data.type === "sessions.updated") {
     renderSessions(data.items, data.agent);
-    if (data.message === "已新建会话。" || data.message === "已打开会话。") {
-      resetChat();
-      const title = data.agent?.sessionTitle ?? "新对话";
-      const count = data.agent?.historyMessages ?? 0;
-      addMessage("assistant", `${data.message}当前会话：${title}（${count} 条消息）`);
-    } else if (data.message) {
+    if (data.message && data.message !== "已新建会话。" && data.message !== "已打开会话。") {
       addMessage("assistant", data.message);
     }
   }
+
+  if (data.type === "sessions.transcript") {
+    restoreTranscript(data.messages);
+  }
+
+  if (data.type === "ui.notice") addMessage("assistant", data.message, "error");
 
   if (data.type === "sessions.notice") {
     addMessage("assistant", data.message ?? "", data.success ? "" : "error");

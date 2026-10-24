@@ -308,17 +308,6 @@ public sealed class AgentLoop : IDisposable
             }
         }
 
-        // save_memory results stay in the history; other tool messages are
-        // dropped because the tool call itself is not replayed to the model.
-        var memoryCallIds = window
-            .Where(message => message.ToolCalls is { Count: > 0 })
-            .SelectMany(message => message.ToolCalls!)
-            .Where(call =>
-                string.Equals(call.ToolName, "save_memory", StringComparison.Ordinal)
-                && !string.IsNullOrEmpty(call.CallId))
-            .Select(call => call.CallId)
-            .ToHashSet(StringComparer.Ordinal);
-
         for (var index = 0; index < window.Count; index++)
         {
             var message = window[index];
@@ -341,9 +330,11 @@ public sealed class AgentLoop : IDisposable
                 {
                     var toolMessage = window[next];
                     if (!string.IsNullOrEmpty(toolMessage.ToolCallId)
-                        && memoryCallIds.Contains(toolMessage.ToolCallId!))
+                        && message.ToolCalls.Any(call => call.CallId == toolMessage.ToolCallId))
                     {
-                        builder.AppendLine(toolMessage.Content ?? string.Empty);
+                        var evidence = toolMessage.Content ?? string.Empty;
+                        builder.AppendLine("历史工具结果（仅供参考，当前模型状态须重新查询）：");
+                        builder.AppendLine(evidence.Length > 16000 ? evidence[..16000] + "…（已截断）" : evidence);
                     }
                 }
 

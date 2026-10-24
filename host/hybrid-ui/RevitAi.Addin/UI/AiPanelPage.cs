@@ -93,6 +93,19 @@ internal sealed class AiPanelPage : Page, IDockablePaneProvider, IDisposable
         _webView.CoreWebView2.Settings.IsStatusBarEnabled = false;
         _webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
         _webView.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
+        _webView.CoreWebView2.NewWindowRequested += (_, e) =>
+        {
+            e.Handled = true;
+            OpenWebLink(e.Uri);
+        };
+        _webView.CoreWebView2.NavigationStarting += (_, e) =>
+        {
+            if (Uri.TryCreate(e.Uri, UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https")
+            {
+                e.Cancel = true;
+                OpenWebLink(e.Uri);
+            }
+        };
 
         var html = BuildEmbeddedHtml();
         _webView.NavigateToString(html);
@@ -104,6 +117,12 @@ internal sealed class AiPanelPage : Page, IDockablePaneProvider, IDisposable
         });
     }
 
+    private static void OpenWebLink(string value)
+    {
+        if (Uri.TryCreate(value, UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https")
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
+    }
+
     private void OnWebMessageReceived(
         object? sender,
         CoreWebView2WebMessageReceivedEventArgs e)
@@ -113,10 +132,11 @@ internal sealed class AiPanelPage : Page, IDockablePaneProvider, IDisposable
 
     private async Task HandleWebMessageAsync(string json)
     {
+        string? type = null;
         try
         {
             var message = JsonNode.Parse(json)?.AsObject() ?? new JsonObject();
-            var type = message["type"]?.GetValue<string>();
+            type = message["type"]?.GetValue<string>();
 
             switch (type)
             {
@@ -134,6 +154,12 @@ internal sealed class AiPanelPage : Page, IDockablePaneProvider, IDisposable
                     HandleAttachmentAdd(message);
                     break;
 
+                case "attachment.remove":
+                    var attachmentId = message["attachmentId"]?.GetValue<string>();
+                    _pendingAttachments.RemoveAll(a => a.AttachmentId == attachmentId);
+                    PostAttachments();
+                    break;
+
                 case "attachment.clear":
                     _pendingAttachments.Clear();
                     PostAttachments();
@@ -145,6 +171,8 @@ internal sealed class AiPanelPage : Page, IDockablePaneProvider, IDisposable
                         ["type"] = "host.status",
                         ["agent"] = AppServices.Agent.GetStatus()
                     });
+                    if (_chatTask.IsCompleted) PostTranscript();
+                    PostAttachments();
                     break;
 
                 case "reset":
@@ -260,7 +288,7 @@ internal sealed class AiPanelPage : Page, IDockablePaneProvider, IDisposable
         {
             Post(new JsonObject
             {
-                ["type"] = "chat.error",
+                ["type"] = type?.StartsWith("settings.") == true ? "settings.error" : type == "chat" ? "chat.error" : "ui.notice",
                 ["message"] = ex.GetBaseException().Message
             });
         }
@@ -301,7 +329,14 @@ internal sealed class AiPanelPage : Page, IDockablePaneProvider, IDisposable
     private async Task ChangeSessionAsync(Action change)
     {
         await _submissionGate.WaitAsync();
-        try { await CancelRunningChatAsync(); change(); }
+        try
+        {
+            await CancelRunningChatAsync();
+            _pendingAttachments.Clear();
+            PostAttachments();
+            change();
+            PostTranscript();
+        }
         finally { _submissionGate.Release(); }
     }
 
@@ -481,7 +516,11 @@ internal sealed class AiPanelPage : Page, IDockablePaneProvider, IDisposable
         var filePath = Path.Combine(
             storageDirectory,
             $"{attachmentId}_{safeName}");
-        File.WriteAllBytes(filePath, Convert.FromBase64String(rawBase64));
+        var bytes = Convert.FromBase64String(rawBase64);
+        if (bytes.LongLength > maxSize) throw new InvalidOperationException("附件最大 50 MB。");
+        if (_pendingAttachments.Count >= 10) throw new InvalidOperationException("每次最多添加 10 个附件。");
+        File.WriteAllBytes(filePath, bytes);
+        size = bytes.LongLength;
 
         _pendingAttachments.Add(new AgentAttachment
         {
@@ -495,6 +534,13 @@ internal sealed class AiPanelPage : Page, IDockablePaneProvider, IDisposable
 
         PostAttachments();
     }
+
+    private void PostTranscript() => Post(new JsonObject
+    {
+        ["type"] = "sessions.transcript",
+        ["sessionId"] = AppServices.Agent.GetStatus()["sessionId"]?.DeepClone(),
+        ["messages"] = AppServices.Agent.GetTranscript()
+    });
 
     private void PostSessions(string type, string? message = null, JsonObject? agent = null)
     {
@@ -596,6 +642,7 @@ internal sealed class AiPanelPage : Page, IDockablePaneProvider, IDisposable
             ["items"] = new JsonArray(
                 _pendingAttachments.Select(item => new JsonObject
                 {
+                    ["attachmentId"] = item.AttachmentId,
                     ["fileName"] = item.FileName,
                     ["contentType"] = item.ContentType,
                     ["size"] = item.Size

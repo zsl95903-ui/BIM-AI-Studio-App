@@ -911,3 +911,14 @@ textarea {
 .session-delete:hover {
   color: var(--red);
 }
+
+/* Rich results stay usable in a narrow Revit dock. */
+.table-scroll { overflow-x: auto; max-width: 100%; }
+.message-body table, .tool-result table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 12px; }
+.message-body th, .message-body td, .tool-result th, .tool-result td { border: 1px solid var(--line-strong); padding: 7px 9px; text-align: left; overflow-wrap: anywhere; }
+.message-body blockquote { border-left: 3px solid var(--blue); padding-left: 12px; margin-left: 0; color: var(--muted); }
+.message-body a { color: var(--blue); text-decoration: underline; }
+.message-body h1, .message-body h2, .message-body h3 { font-size: 16px; margin: 12px 0 7px; }
+.attachment-chip button { border: 0; background: transparent; color: inherit; cursor: pointer; padding: 0 5px; font-size: 18px; }
+.tool-result { padding: 0 12px 12px; overflow-wrap: anywhere; }
+.tool-item pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }

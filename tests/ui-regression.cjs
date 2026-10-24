@@ -54,3 +54,17 @@ assert.equal(vm.runInContext('activeAssistant', context), second, 'new run lost 
 event({ type: 'chat.response', runId: 1, message: 'stale response' });
 assert.equal(vm.runInContext('activeAssistant', context), second, 'stale response changed new run');
 console.log('UI: stop button, empty stop, prompt supersession, placeholder ownership and stale-run isolation passed.');
+// History must survive opening, and untrusted model text must stay inert.
+assert.match(vm.runInContext('renderMarkdown("| 标高 | 高度 |\\n| --- | --- |\\n| 一层 | 3000 |")', context), /<table>/);
+assert.match(vm.runInContext('renderMarkdown("<img src=x onerror=alert(1)>")', context), /&lt;img/);
+assert.doesNotMatch(vm.runInContext('renderMarkdown("[bad](javascript:alert(1))")', context), /<a/);
+assert.match(vm.runInContext('renderMarkdown("[文档](https://example.com)")', context), /rel="noopener noreferrer"/);
+assert.match(vm.runInContext('renderMarkdown("```html\\n<img src=x>\\n```")', context), /&lt;img/);
+assert.match(vm.runInContext('renderToolPayload({levels:[{name:"<script>",elevation:3000}]})', context), /&lt;script&gt;/);
+event({type:'sessions.transcript', messages:[{role:'user',content:'历史问题'},{role:'assistant',toolCalls:[{id:'historic',name:'get_all_levels',argumentsJson:'{}'}]},{role:'tool',toolCallId:'historic',content:JSON.stringify({toolName:'get_all_levels',success:true,payload:{levels:[{name:'一层'}]}})},{role:'assistant',content:'历史回答'}]});
+assert.equal(vm.runInContext('toolCards.size',context),1);
+assert.equal(vm.runInContext('state.busy',context),false);
+assert.equal(vm.runInContext('pendingAssistants.length',context),0);
+event({type:'host.status',agent:{configured:true,toolsReady:true,tools:[]}});
+assert.equal(elements.get('connection-text').textContent,'已配置 · 未测试');
+console.log('UI: transcript rehydration, tool tables, Markdown tables/links, HTML escaping and honest API status passed.');

@@ -15,6 +15,7 @@ internal sealed class AgentRuntimeService : IDisposable
     private AgentSessionState _session = new();
     private readonly RuntimeSettings _settings;
     private AgentLoop? _agentLoop;
+    private DateTime? _connectionTestedAt;
 
     public AgentRuntimeService(IToolInvoker tools)
     {
@@ -99,11 +100,9 @@ internal sealed class AgentRuntimeService : IDisposable
     {
         using var lease = AcquireSession();
         var loaded = _sessionStore.Load(sessionId);
-        if (loaded is not null)
-        {
-            _sessionStore.Save(_session);
-            _session = loaded;
-        }
+        if (loaded is null) throw new InvalidOperationException("会话不存在或已损坏。");
+        _sessionStore.Save(_session);
+        _session = loaded;
 
         return GetStatus();
     }
@@ -199,6 +198,22 @@ internal sealed class AgentRuntimeService : IDisposable
         }
     }
 
+    public JsonArray GetTranscript()
+    {
+        using var lease = AcquireSession();
+        return new JsonArray(
+            _session.Messages.Where(m => m.Role is "user" or "assistant" or "tool")
+            .Select(m => (JsonNode?)new JsonObject
+            {
+                ["role"] = m.Role, ["content"] = m.Content,
+                ["toolCallId"] = m.ToolCallId,
+                ["toolCalls"] = new JsonArray((m.ToolCalls ?? []).Select(c => (JsonNode?)new JsonObject
+                {
+                    ["id"] = c.CallId, ["name"] = c.ToolName, ["argumentsJson"] = c.ArgumentsJson
+                }).ToArray())
+            }).ToArray());
+    }
+
     public JsonObject GetStatus()
     {
         var tools = _tools.Tools.ToList();
@@ -215,7 +230,8 @@ internal sealed class AgentRuntimeService : IDisposable
             ["rounds"] = _session.RoundCount,
             ["summaryCoveredMessages"] = _session.SummaryMessageCount,
             ["hasSummary"] = !string.IsNullOrEmpty(_session.AccumulatedSummary),
-            ["build"] = "v9.2-external-rename",
+            ["build"] = "bridge-3-ui",
+            ["connectionTestedAt"] = _connectionTestedAt?.ToString("O"),
             ["skills"] = new JsonArray(),
             ["toolCount"] = tools.Count,
             ["toolSets"] = new JsonArray(
@@ -260,6 +276,7 @@ internal sealed class AgentRuntimeService : IDisposable
             throw new ArgumentException("Model is required.");
         }
 
+        _connectionTestedAt = null;
         _settings.ApiUrl = apiUrl.Trim();
         _settings.Model = model.Trim();
 
@@ -283,6 +300,8 @@ internal sealed class AgentRuntimeService : IDisposable
                 "API URL, API key and model must be configured first.");
         }
 
+        using var lease = AcquireSession();
+        _connectionTestedAt = null;
         using var client = CreateModelClient();
         var response = await client.CreateAsync(
             new AgentModelRequest
@@ -300,6 +319,7 @@ internal sealed class AgentRuntimeService : IDisposable
             },
             cancellationToken);
 
+        _connectionTestedAt = DateTime.UtcNow;
         return new JsonObject
         {
             ["success"] = true,
